@@ -5,9 +5,11 @@ from helper.utils import *
 import train
 import warnings
 
+
 if __name__ == '__main__':
 
     args = create_parser()
+    print(args)
     if args.fix_seed is False:
         if args.parts_per_node < args.n_partitions:
             warnings.warn('Please enable `--fix-seed` for multi-node training.')

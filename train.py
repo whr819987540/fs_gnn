@@ -280,9 +280,7 @@ def run(graph, node_dict, gpb, args):
 
     recv_shape = get_recv_shape(node_dict)
 
-    ctx.buffer.init_buffer(num_in, graph.num_nodes('_U'), boundary, recv_shape, layer_size[:args.n_layers-args.n_linear],
-                           use_pp=args.use_pp, backend=args.backend, pipeline=args.enable_pipeline,
-                           corr_feat=args.feat_corr, corr_grad=args.grad_corr, corr_momentum=args.corr_momentum)
+    ctx.buffer.init_buffer(num_in, graph.num_nodes('_U'), boundary, recv_shape, layer_size[:args.n_layers-args.n_linear],use_pp=args.use_pp, backend=args.backend, pipeline=args.enable_pipeline,corr_feat=args.feat_corr, corr_grad=args.grad_corr, corr_momentum=args.corr_momentum)
 
     if args.use_pp:
         node_dict['feat'] = precompute(graph, node_dict, boundary, recv_shape, args)
@@ -314,10 +312,12 @@ def run(graph, node_dict, gpb, args):
         result_file_name = 'results/%s_n%d_p%d_feat.txt' % (args.dataset, args.n_partitions, int(args.enable_pipeline))
     else:
         result_file_name = 'results/%s_n%d_p%d.txt' % (args.dataset, args.n_partitions, int(args.enable_pipeline))
+        
     if args.dataset == 'yelp':
         loss_fcn = torch.nn.BCEWithLogitsLoss(reduction='sum')
     else:
         loss_fcn = torch.nn.CrossEntropyLoss(reduction='sum')
+        
     optimizer = torch.optim.Adam(model.parameters(),
                                  lr=args.lr,
                                  weight_decay=args.weight_decay)
@@ -345,11 +345,14 @@ def run(graph, node_dict, gpb, args):
             logits = model(graph, feat, in_deg)
         else:
             raise Exception
+        
         if args.inductive:
             loss = loss_fcn(logits, labels)
         else:
             loss = loss_fcn(logits[train_mask], labels)
+
         del logits
+
         optimizer.zero_grad(set_to_none=True)
 
         loss.backward()
@@ -409,8 +412,12 @@ def init_processes(rank, size, args):
     """ Initialize the distributed environment. """
     os.environ['MASTER_ADDR'] = args.master_addr
     os.environ['MASTER_PORT'] = '%d' % args.port
+    # Initializes the default distributed process group 
+    # rank: Rank of the current process
+    # world_size : Number of processes participating in the job
     dist.init_process_group(args.backend, rank=rank, world_size=size)
     rank, size = dist.get_rank(), dist.get_world_size()
     check_parser(args)
+    # load the partition which has been saved on the disk
     g, node_dict, gpb = load_partition(args, rank)
     run(g, node_dict, gpb, args)

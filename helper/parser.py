@@ -45,7 +45,8 @@ def create_parser():
     parser.add_argument("--feat-corr", "--feat_corr", action='store_true')
     parser.add_argument("--grad-corr", "--grad_corr", action='store_true')
     parser.add_argument("--corr-momentum", "--corr_momentum", type=float, default=0.95)
-
+    parser.add_argument("--sigma", "--sigma", type=float, default=1.0)
+    parser.add_argument("--lamda", "--lamda", type=float, default=0.1)
     parser.add_argument("--use-pp", "--use_pp", action='store_true',
                         help="whether to use precomputation")
     parser.add_argument("--inductive", action='store_true',
@@ -66,6 +67,12 @@ def create_parser():
                         help="enable evaluation")
     parser.add_argument('--no-eval', action='store_false', dest='eval',
                         help="disable evaluation")
+    parser.add_argument('--fs', action='store_true',
+                        help="add fs layer")
+    parser.add_argument('--no-fs', action='store_false', dest='eval',
+                        help="don't add fs layer")
+
+    
     parser.set_defaults(eval=True)
 
     return parser.parse_args()

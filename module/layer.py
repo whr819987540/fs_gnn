@@ -6,7 +6,6 @@ import dgl.function as fn
 
 
 class GraphSAGELayer(nn.Module):
-
     def __init__(self,
                  in_feats,
                  out_feats,

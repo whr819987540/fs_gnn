@@ -123,7 +123,8 @@ class Buffer(object):
             self._b_cuda_event[i] = torch.cuda.Event()
         self._corr_momentum = corr_momentum
         self._corr_feat, self._corr_grad = corr_feat, corr_grad
-        self._pool = ThreadPool(processes=2*self._n_layers)
+        # self._pool = ThreadPool(processes=2*self._n_layers)
+        self._pool = ThreadPool(processes=2) # 不一定能创建这么大的线程池
         self.__init_pl_pr()
 
     def next_epoch(self):

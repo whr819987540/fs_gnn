@@ -15,9 +15,15 @@ class Reducer(object):
     def init(self, model):
         cnt = 0
         for i, (name, param) in enumerate(model.named_parameters()):
+            print(f"{name}")
             cnt += 1
-            self._data_cpu[name] = (torch.zeros_like(param.data, pin_memory=True, device='cpu'), dist.new_group())
-        self._pool = ThreadPool(processes=cnt)
+            # 规约时的临时数据放在cpu上
+            # 可以提高异步传输时计算与通信的效率，但是会增大对主存的占用
+            # 根据内存情况选择是否开启
+            self._data_cpu[name] = (torch.zeros_like(param.data, pin_memory=False, device='cpu'), dist.new_group())
+            print("dist.new_group() ok")
+        # self._pool = ThreadPool(processes=cnt) # 不一定能创建这么多线程
+        self._pool = ThreadPool(processes=2) 
         self._stream = torch.cuda.Stream()
 
     def reduce(self, param, name, data, n_train):
