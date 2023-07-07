@@ -19,7 +19,7 @@ target_test_acc = 0.6 # 训练终止条件2
 
 # load cora dataset
 # dataset = dgl.data.CoraGraphDataset()  # 特征很稀疏
-# dateset = dgl.data.CitationGraphDataset("citeseer") # 特征很稀疏
+# dataset = dgl.data.CitationGraphDataset("citeseer") # 特征很稀疏
 # dataset = dgl.data.PPIDataset() # label是一个向量而不简单只是一个标量
 dataset = dgl.data.PubmedGraphDataset()
 print(dataset.num_labels)
