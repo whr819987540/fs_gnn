@@ -6,6 +6,10 @@ import torch
 
 
 def matrix_transfer_volume(matrix: torch.Tensor) -> int:
+    # 需要放到cpu上才能转化为稀疏矩阵
+    if matrix.device != torch.device("cpu"):
+        matrix = matrix.cpu()
+        
     # 将矩阵转为稀疏矩阵, 然后返回传输时占用空间的大小（字节）
     sparse_matrix = sparse.csr_matrix(matrix.data)
     # print(matrix)
