@@ -13,9 +13,16 @@ os.environ["DGLBACKEND"] = "pytorch"
 
 
 fs = True
-lr = 1e-4 # 0.001都很难收敛，尤其是没有fs
-epoch = 10000 # 训练终止条件1
-target_test_acc = 0.6 # 训练终止条件2
+gpu = True
+lr = 1e-4  # 0.001都很难收敛，尤其是没有fs
+epoch = 10000  # 训练终止条件1
+target_test_acc = 0.6  # 训练终止条件2
+
+# device
+if gpu:
+    device = d2l.try_gpu()
+else:
+    device = torch.device('cpu')
 
 # load cora dataset
 # dataset = dgl.data.CoraGraphDataset()  # 特征很稀疏
@@ -26,11 +33,13 @@ print(dataset.num_labels)
 # print(f"Number of categories: {dataset.num_labels}")
 
 g = dataset[0]
+g = g.to(device)
+
 
 # define the model
 # layer_size = get_layer_size(g.ndata['feat'].shape[1], 64, dataset.num_labels, 2)
 layer_size = [g.ndata['feat'].shape[1], 64, 16, dataset.num_labels]
-print(layer_size,lr)  # 500 64 3
+print(layer_size, lr)  # 500 64 3
 
 
 train_mask = g.ndata["train_mask"]
@@ -45,6 +54,7 @@ model = GCN(
     mu=mu,
     fs=fs,
 )
+model.to(device)
 
 # general acc calculate function
 
@@ -72,7 +82,8 @@ def train(g, model):
     val_mask = g.ndata["val_mask"]
 
     # animator = d2l.Animator("epoch","loss/acc")
-    writer = get_writer("logs", "single", "cpu", "fs" if fs else "no fs",f"dataset={dataset.name}",f"layer={layer_size}" f"lr={lr}", now_str())
+    writer = get_writer("logs", "single", "cpu", "fs" if fs else "no fs",
+                        f"dataset={dataset.name}", f"layer={layer_size}" f"lr={lr}", now_str())
     for e in range(epoch):
         # Forward
         # logits = model(features, g.adjacency_matrix().to_dense())
