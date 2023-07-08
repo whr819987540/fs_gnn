@@ -9,7 +9,7 @@ def matrix_transfer_volume(matrix: torch.Tensor) -> int:
     # 需要放到cpu上才能转化为稀疏矩阵
     if matrix.device != torch.device("cpu"):
         matrix = matrix.cpu()
-        
+
     # 将矩阵转为稀疏矩阵, 然后返回传输时占用空间的大小（字节）
     sparse_matrix = sparse.csr_matrix(matrix.data)
     # print(matrix)
@@ -61,7 +61,13 @@ class GCN(nn.Module):
             将feature以及每层的输出作为传输对象(预测值除外)
             以稀疏矩阵的方式进行传输, 比较有无fs情况下传输量的变化
         """
-        adj = g.adjacency_matrix().to_dense()
+        # 稀疏矩阵转化为tensor后可以直接参与torch.spmm运算，而无需转为稠密矩阵
+        adj = g.adjacency_matrix()
+        adj_tensor = torch.sparse_coo_tensor(
+            indices=adj.indices(),
+            values=adj.val,
+            size=adj.shape
+        )
         for i in range(len(self.layers)):
             # 统计传输量
             # feature以及最终的输出都不需要传输
@@ -82,7 +88,7 @@ class GCN(nn.Module):
                 print(self.feature_num, self.feature_zero, self.feature_fs_zero)
 
             else:
-                x = self.layers[i](x, adj)
+                x = self.layers[i](x, adj_tensor)
                 x = self.relu(x)
                 x = self.dropout(x)
                 if i != len(self.layers) - 1:
