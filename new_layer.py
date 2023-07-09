@@ -41,7 +41,7 @@ class FSLayer(nn.Module):
             self.mu.data = mu
 
     def forward(self, h):
-        rou = torch.normal(0, self.sigma, size=(self.dim,))
+        rou = torch.normal(0, self.sigma, size=(self.dim,),device=h.device)
         s = torch.clamp(self.mu + rou, 0, 1)
         return s * h
 
