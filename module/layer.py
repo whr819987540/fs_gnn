@@ -43,17 +43,26 @@ class GraphSAGELayer(nn.Module):
                     degs = in_deg.unsqueeze(1)
                     num_dst = graph.num_nodes('_V')
                     graph.nodes['_U'].data['h'] = feat
-                    graph['_E'].update_all(fn.copy_src(src='h', out='m'),
-                                           fn.sum(msg='m', out='h'),
-                                           etype='_E')
+                    graph['_E'].update_all(
+                        # fn.copy_src(src='h', out='m'),
+                        # copy_src is deprecated, new is copy_u
+                        fn.copy_u(u='h', out='m'),
+                        fn.sum(msg='m', out='h'),
+                        etype='_E'
+                    )
+
                     ah = graph.nodes['_V'].data['h'] / degs
                     feat = self.linear1(feat[0:num_dst]) + self.linear2(ah)
             else:
                 assert in_deg is None
                 degs = graph.in_degrees().unsqueeze(1)
                 graph.ndata['h'] = feat
-                graph.update_all(fn.copy_src(src='h', out='m'),
-                                 fn.sum(msg='m', out='h'))
+                graph.update_all(
+                    # fn.copy_src(src='h', out='m'),
+                    # copy_src is deprecated, new is copy_u
+                    fn.copy_u(u='h', out='m'),
+                    fn.sum(msg='m', out='h')
+                )
                 ah = graph.ndata.pop('h') / degs
                 if self.use_pp:
                     feat = self.linear(torch.cat((feat, ah), dim=1))
