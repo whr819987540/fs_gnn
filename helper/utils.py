@@ -85,10 +85,10 @@ def load_data(dataset):
     elif dataset == 'yelp':
         g = load_yelp()
     elif dataset == 'pubmed':
-        data = PubmedGraphDataset()
+        data = PubmedGraphDataset(raw_dir="./dataset/")
         g = data[0]
     elif dataset == "cora":
-        data = CoraGraphDataset()
+        data = CoraGraphDataset(raw_dir='./dataset/')
         g = data[0]
     else:
         raise ValueError('Unknown dataset: {}'.format(dataset))
