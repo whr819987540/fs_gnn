@@ -63,7 +63,7 @@ class GraphSAGEWithFS(GNNBase):
     def forward(self, g, feat, in_deg=None):
         h = feat
         for i in range(self.n_layers):
-            # fs
+            # fs层
             if i == 0 and self.fs:
                 # 比较fs前后0数量的变化
                 self.feature_zero += zero_count(h)
@@ -73,27 +73,26 @@ class GraphSAGEWithFS(GNNBase):
                 self.feature_num += h.numel()
                 print(self.feature_num, self.feature_zero, self.feature_fs_zero)
                 # fs的输出不传
-                continue
-            
-            # 非线性层
-            if i < self.n_layers - self.n_linear:
-                if self.training and (i > 0 or not self.use_pp):
-                    h = ctx.buffer.update(i, h)
-                    # 统计信息传输量
-                h = self.dropout(h)
-                h = self.layers[i](g, h, in_deg)
-            # 线性层
             else:
-                h = self.dropout(h)
-                h = self.layers[i](h)
+                # 非线性层
+                if i < self.n_layers - self.n_linear:
+                    if self.training and (i > 0 or not self.use_pp):
+                        h = ctx.buffer.update(i, h)
+                        # 统计信息传输量
+                    h = self.dropout(h)
+                    h = self.layers[i](g, h, in_deg)
+                # 线性层
+                else:
+                    h = self.dropout(h)
+                    h = self.layers[i](h)
 
-            # 对各层的输出归一化
-            # fs不需要，但self.norm[0]占了位
-            # logits不需要，也不产生归一化层
-            if i < self.n_layers - 1:
-                if self.use_norm:
-                    h = self.norm[i](h)
-                h = self.activation(h)
+                # 对各层的输出归一化
+                # fs不需要，但self.norm[0]占了位
+                # logits不需要，也不产生归一化层
+                if i < self.n_layers - 1:
+                    if self.use_norm:
+                        h = self.norm[i](h)
+                    h = self.activation(h)
 
         return h
 
