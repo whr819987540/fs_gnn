@@ -74,7 +74,6 @@ def average_gradients(model, n_train):
 
 
 def move_to_cuda(graph, part, node_dict):
-
     for key in node_dict.keys():
         node_dict[key] = node_dict[key].cuda()
     graph = graph.int().to(torch.device('cuda'))
@@ -101,6 +100,8 @@ def get_pos(node_dict, gpb):
 
 
 def get_recv_shape(node_dict):
+    # for the present process, the shape is None
+    # for the other process, the shape is the number of boundary nodes in both the other process and the present process
     rank, size = dist.get_rank(), dist.get_world_size()
     recv_shape = []
     for i in range(size):
@@ -113,6 +114,8 @@ def get_recv_shape(node_dict):
 
 
 def create_inner_graph(graph, node_dict):
+    # inner graph是边的起点与终点都是inner node的图
+    # 也就是说边完全在这个图里面，没有被子图划分给切割开
     u, v = graph.edges()
     sel = torch.logical_and(node_dict['inner_node'].bool()[u], node_dict['inner_node'].bool()[v])
     u, v = u[sel], v[sel]
@@ -252,12 +255,22 @@ def extract(graph, node_dict):
 
 
 def run(graph, node_dict, gpb, args):
+    #   graph is the subgraph
+    #   node_dict:
+    #   part_id (int): the partition id of each node, from 0 to n_partitions-1
+    #       including the inner nodes and boundary nodes
+    #   inner_node: whether the node is inner node
+    #   torch.unique((node_dict['part_id']==0)==(node_dict['inner_node']))
+    #   tensor([True], device='cuda:0')
+    #   label, feat, in_degree: only for inner nodes
+    #   train_mask, val_mask, test_mask: only for inner nodes
     rank, size = dist.get_rank(), dist.get_world_size()
 
     torch.autograd.set_detect_anomaly(False)
     torch.autograd.profiler.profile(False)
     torch.autograd.profiler.emit_nvtx(False)
 
+    # load the whole graph
     if rank == 0 and args.eval:
         full_g, n_feat, n_class = load_data(args.dataset)
         if args.inductive:
@@ -266,38 +279,48 @@ def run(graph, node_dict, gpb, args):
             val_g, test_g = full_g.clone(), full_g.clone()
         del full_g
 
+    # record the training results
     if rank == 0:
         os.makedirs('checkpoint/', exist_ok=True)
         os.makedirs('results/', exist_ok=True)
 
+    # inner graph是边的起点与终点都是inner node的图
+    # dgl对于边界节点采取的策略是复制，即某条边连接的两个子图都拥有该边界节点
     part = create_inner_graph(graph.clone(), node_dict)
     num_in = node_dict['inner_node'].bool().sum().item()
     part.ndata.clear()
     part.edata.clear()
-
-    print(f'Process {rank} has {graph.num_nodes()} nodes, {graph.num_edges()} edges '
-          f'{part.num_nodes()} inner nodes, and {part.num_edges()} inner edges.')
+    print(f"num_in: {num_in}") # equal to part.num_nodes()
+    print(f'Process {rank} has {graph.num_nodes()} nodes, {graph.num_edges()} edges ,{part.num_nodes()} inner nodes, and {part.num_edges()} inner edges.')
 
     graph, part, node_dict = move_to_cuda(graph, part, node_dict)
-    boundary = get_boundary(node_dict, gpb)
     print("move_to_cuda")
+
+    # 获取边界节点
+    boundary = get_boundary(node_dict, gpb)
 
     layer_size = get_layer_size(args.n_feat, args.n_hidden, args.n_class, args.n_layers)
     # [500, 64, 16, 3]
+    # [n_feat, n_hidden ...(n_layers-1), n_class]
     layer_size = [args.n_feat, 64, 16, args.n_class]
     if args.fs:
         # [500, 500, 64, 16, 3]
+        # [n_feat, fs(n_feat), n_hidden ...(n_layers-1), n_class]
         layer_size.insert(0,layer_size[0])
     print(f"layer_size: {layer_size}")
 
     pos = get_pos(node_dict, gpb)
     graph = order_graph(part, graph, gpb, node_dict, pos)
+    # store the in_deg for inner nodes
     in_deg = node_dict['in_degree']
     print("order_graph")
 
     graph, node_dict, boundary = move_train_first(graph, node_dict, boundary)
     print("move_train_first")
 
+    # recv_shape有size个分量
+    # 对于第i个分量，如果i==rank，那么该分量为None
+    # 否则，该分量为第i个进程与当前进程的边界节点数，也就是待传输节点数
     recv_shape = get_recv_shape(node_dict)
     print(f"get_recv_shape {recv_shape}")
 
