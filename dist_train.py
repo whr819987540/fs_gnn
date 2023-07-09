@@ -1,5 +1,5 @@
 import torch.nn.functional as F
-from module.model import *
+from module.fs_model import *
 from helper.utils import *
 import torch.distributed as dist
 import time
@@ -191,10 +191,20 @@ def precompute(graph, node_dict, boundary, recv_shape, args):
         raise Exception
 
 
-def create_model(layer_size, args):
+def create_model(layer_size,mu, args):
     if args.model == 'graphsage':
-        return GraphSAGE(layer_size, F.relu, args.use_pp, norm=args.norm, dropout=args.dropout,
-                         n_linear=args.n_linear, train_size=args.n_train)
+        return GraphSAGEWithFS(
+            layer_size=layer_size,
+            activation=F.relu,
+            use_pp=args.use_pp,
+            sigma=args.sigma,
+            mu=mu,
+            fs=args.fs,
+            dropout=args.dropout,
+            norm=args.norm,
+            train_size=args.n_train,
+            n_linear=args.n_linear
+        )
     else:
         raise NotImplementedError
 
@@ -274,8 +284,11 @@ def run(graph, node_dict, gpb, args):
 
     layer_size = get_layer_size(args.n_feat, args.n_hidden, args.n_class, args.n_layers)
     # [500, 64, 16, 3]
-    layer_size = [args.n_feat, 64, 16, args.n_layers]
-    print(f"{layer_size}")
+    layer_size = [args.n_feat, 64, 16, args.n_class]
+    if args.fs:
+        # [500, 500, 64, 16, 3]
+        layer_size.insert(0,layer_size[0])
+    print(f"layer_size: {layer_size}")
 
     pos = get_pos(node_dict, gpb)
     graph = order_graph(part, graph, gpb, node_dict, pos)
@@ -288,12 +301,19 @@ def run(graph, node_dict, gpb, args):
     recv_shape = get_recv_shape(node_dict)
     print(f"get_recv_shape {recv_shape}")
 
-    ctx.buffer.init_buffer(
-        num_in, graph.num_nodes('_U'), boundary,
-        recv_shape, layer_size[:args.n_layers-args.n_linear],
-        use_pp=args.use_pp, backend=args.backend,
-        pipeline=args.enable_pipeline, corr_feat=args.feat_corr,
-        corr_grad=args.grad_corr, corr_momentum=args.corr_momentum
+    ctx.buffer.init_buffer(        
+        num_in=num_in,
+        num_all=graph.num_nodes('_U'), 
+        boundary=boundary,
+        f_recv_shape=recv_shape, 
+        # layer_size=layer_size[:args.n_layers-args.n_linear],
+        layer_size=layer_size[:len(layer_size) - args.n_linear],
+        use_pp=args.use_pp, 
+        backend=args.backend,
+        pipeline=args.enable_pipeline, 
+        corr_feat=args.feat_corr,
+        corr_grad=args.grad_corr, 
+        corr_momentum=args.corr_momentum
     )
     print("init_buffer")
 
@@ -315,14 +335,14 @@ def run(graph, node_dict, gpb, args):
     train_x = feat[train_mask]
     train_y = labels[train_mask]
     mu = feature_importance_gini(train_x, train_y)
-    model = create_model(layer_size, args)
-    model = GCN(
-        layer_size=layer_size,
-        dropout=args.dropout,
-        sigma=args.sigma,
-        mu=mu,
-        fs=args.fs,
-    )
+    model = create_model(layer_size,mu, args)
+    # model = GCN(
+    #     layer_size=layer_size,
+    #     dropout=args.dropout,
+    #     sigma=args.sigma,
+    #     mu=mu,
+    #     fs=args.fs,
+    # )
     model.cuda()
     print("model")
 
@@ -386,8 +406,9 @@ def run(graph, node_dict, gpb, args):
         t0 = time.time()
         model.train()
         if args.model == 'graphsage':
-            # logits = model(graph, feat, in_deg)
-            logits = model(graph, feat)
+            logits = model(graph, feat, in_deg)
+            # print(type(graph)) # <class 'dgl.heterograph.DGLGraph'>
+            # logits = model(graph, feat)
         else:
             raise Exception
 
