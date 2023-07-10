@@ -330,7 +330,7 @@ def run(graph, node_dict, gpb, args):
         boundary=boundary,
         f_recv_shape=recv_shape, 
         # layer_size=layer_size[:args.n_layers-args.n_linear],
-        layer_size=layer_size[:len(layer_size) - args.n_linear],
+        layer_size=layer_size[:len(layer_size) - args.n_linear - 1],
         use_pp=args.use_pp, 
         backend=args.backend,
         pipeline=args.enable_pipeline, 
