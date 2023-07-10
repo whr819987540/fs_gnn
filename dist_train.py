@@ -215,9 +215,12 @@ def create_model(layer_size,mu, args):
         raise NotImplementedError
 
 
-def reduce_hook(param, name, n_train):
+def reduce_hook(param, name, args, optimizer:torch.optim.Optimizer):
     def fn(grad):
-        ctx.reducer.reduce(param, name, grad, n_train)
+        # OPT3
+        epoch = optimizer.state['step']
+        if get_update_flag(epoch, args):
+            ctx.reducer.reduce(param, name, grad, args.n_train)
     return fn
 
 
@@ -255,6 +258,10 @@ def extract(graph, node_dict):
             node_dict[key] = node_dict[key][sel]
     graph = dgl.node_subgraph(graph, sel, store_ids=False)
     return graph, node_dict
+
+
+def get_update_flag(epoch, args):
+    return epoch % args.log_every == 0
 
 
 def run(graph, node_dict, gpb, args):
@@ -374,15 +381,33 @@ def run(graph, node_dict, gpb, args):
     model.cuda()
     print("model")
 
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=args.lr,
+        weight_decay=args.weight_decay
+    )
+
     # create the same type tensor with model parameters for parameter reducing on cpu
     ctx.reducer.init(model)
     print("reducer init")
 
+    # OPT3
+    # reduce_hook在每次训练使用backward计算出梯度后都会被调用
+    # 但是目前希望在间隔几个epoch才进行梯度聚合
+    # 所以需要将epoch作为参数传进去
+    # 由于reduce_hook的参数需要在注册时绑定，所以需要将epoch放到一个类中
+    # 可以放到optimizer中
+    # tell optimizer the epoch
+    optimizer.state['step'] = 0
     # register the hook for gradient reducing on cpu
     # the hook will be called after the local gradient is computed
     for i, (name, param) in enumerate(model.named_parameters()):
-        param.register_hook(reduce_hook(param, name, args.n_train))
-
+        # OPT3: fs参数不需要聚合
+        if name.endswith("mu"):
+            continue
+        # param.register_hook(reduce_hook(param, name, args.n_train))
+        param.register_hook(reduce_hook(param, name, args, optimizer))
+        
     best_model, best_acc = None, 0
 
     if args.grad_corr and args.feat_corr:
@@ -411,12 +436,6 @@ def run(graph, node_dict, gpb, args):
     # else:
     #     loss_fcn = torch.nn.CrossEntropyLoss(reduction='sum')
 
-    optimizer = torch.optim.Adam(
-        model.parameters(),
-        lr=args.lr,
-        weight_decay=args.weight_decay
-    )
-
     train_dur, comm_dur, reduce_dur = [], [], []
     torch.cuda.reset_peak_memory_stats()
     thread = None
@@ -431,15 +450,19 @@ def run(graph, node_dict, gpb, args):
         node_dict.pop('val_mask')
         node_dict.pop('test_mask')
 
-    
     for epoch in range(args.n_epochs):
         print(f"[{rank}] epoch:{epoch}")
+
+        # OPT3: update the step in optimizer
+        optimizer.state['step'] = epoch
+        update_flag = get_update_flag(epoch, args)
+            
         t0 = time.time()
         model.train()
 
         # forward
         if args.model == 'graphsage':
-            logits = model(graph, feat, in_deg)
+            logits = model(graph, feat, in_deg, update_flag)
             # print(type(graph)) # <class 'dgl.heterograph.DGLGraph'>
             # logits = model(graph, feat)
         else:
@@ -471,24 +494,33 @@ def run(graph, node_dict, gpb, args):
 
         del logits
 
-        # reduce_hook will aggregate the gradients of the same parameter on different processes
         optimizer.zero_grad(set_to_none=True)
+        # OPT3: calculate the gradients but aggregate the gradients periodically by reduce_hook and optimizer.state['step']
+        # reduce_hook will aggregate the gradients of the same parameter on different processes
         loss.backward()
+        # 这里实际上是在等待同步完成
+        # 需要更新时才会统计时间
+        if update_flag:
+            pre_reduce = time.time()
+            ctx.reducer.synchronize()
+            reduce_time = time.time() - pre_reduce
 
         ctx.buffer.next_epoch()
-        pre_reduce = time.time()
-        ctx.reducer.synchronize()
-        reduce_time = time.time() - pre_reduce
 
         # gradient aggregation ok
+        # update the parameters
         optimizer.step()
 
-        if epoch >= 5 and epoch % args.log_every != 0:
+        # if epoch >= 5 and epoch % args.log_every != 0 :
+        if update_flag:
+            # 总的训练时间
             train_dur.append(time.time() - t0)
+            # 传输embedding的时间
             comm_dur.append(ctx.comm_timer.tot_time())
+            # 传输梯度的时间
             reduce_dur.append(reduce_time)
 
-        if (epoch + 1) % 10 == 0:
+        # if (epoch + 1) % 10 == 0:
             print("Process {:03d} | Epoch {:05d} | Time(s) {:.4f} | Comm(s) {:.4f} | Reduce(s) {:.4f} | Loss {:.4f}".format(
                   rank, epoch, np.mean(train_dur), np.mean(comm_dur), np.mean(reduce_dur), loss.item() / part_train))
 
@@ -497,13 +529,18 @@ def run(graph, node_dict, gpb, args):
         del loss
 
         # find the best model by validation accuracy
-        if rank == 0 and args.eval and (epoch + 1) % args.log_every == 0:
+        if rank == 0 and args.eval and get_update_flag(epoch, args):
             if thread is not None:
                 model_copy, val_acc = thread.get()
                 if val_acc > best_acc:
                     best_acc = val_acc
                     best_model = model_copy
-            model_copy = copy.deepcopy(model)
+            # OP3: 在model里面加入了一个list[None|torch.Tensor]和一个torch.Tensor作为成员后
+            # torch.Tensor默认不支持深度拷贝，所以选择state_dict来拷贝
+            # model_copy = copy.deepcopy(model)
+            model_copy  = create_model(layer_size,mu, args)
+            model_copy.load_state_dict(model.state_dict())
+            
             
             # submit the validation task to another thread
             if not args.inductive:
