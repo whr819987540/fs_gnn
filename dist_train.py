@@ -185,9 +185,12 @@ def precompute(graph, node_dict, boundary, recv_shape, args):
     if args.model == 'graphsage':
         with graph.local_scope():
             graph.nodes['_U'].data['h'] = merge_feature(feat, recv_feat)
-            graph['_E'].update_all(fn.copy_src(src='h', out='m'),
-                                   fn.sum(msg='m', out='h'),
-                                   etype='_E')
+            graph['_E'].update_all(
+                # fn.copy_src(src='h', out='m'),
+                fn.copy_u(u='h', out='m'),
+                fn.sum(msg='m', out='h'),
+                etype='_E',
+            )
             mean_feat = graph.nodes['_V'].data['h'] / node_dict['in_degree'][0:in_size].unsqueeze(1)
         return torch.cat([feat, mean_feat[0:in_size]], dim=1)
     else:
@@ -341,7 +344,9 @@ def run(graph, node_dict, gpb, args):
     print("init_buffer")
 
     if args.use_pp:
+        print(node_dict['feat'].shape)
         node_dict['feat'] = precompute(graph, node_dict, boundary, recv_shape, args)
+        print(node_dict['feat'].shape)
 
     del boundary
     del part
@@ -371,9 +376,12 @@ def run(graph, node_dict, gpb, args):
 
     # create the same type tensor with model parameters for parameter reducing on cpu
     ctx.reducer.init(model)
+    print("reducer init")
+
+    # register the hook for gradient reducing on cpu
+    # the hook will be called after the local gradient is computed
     for i, (name, param) in enumerate(model.named_parameters()):
         param.register_hook(reduce_hook(param, name, args.n_train))
-    print("reducer init")
 
     best_model, best_acc = None, 0
 
@@ -428,17 +436,20 @@ def run(graph, node_dict, gpb, args):
         print(f"[{rank}] epoch:{epoch}")
         t0 = time.time()
         model.train()
+
+        # forward
         if args.model == 'graphsage':
             logits = model(graph, feat, in_deg)
             # print(type(graph)) # <class 'dgl.heterograph.DGLGraph'>
             # logits = model(graph, feat)
         else:
-            raise Exception
+            raise NotImplementedError
 
+        # loss
         if args.inductive:
             loss = loss_func(
-                results=logits[train_mask],
-                labels=labels[train_mask],
+                results=logits,
+                labels=labels,
                 lamda=args.lamda,
                 sigma=args.sigma,
                 model=model,
@@ -460,15 +471,16 @@ def run(graph, node_dict, gpb, args):
 
         del logits
 
+        # reduce_hook will aggregate the gradients of the same parameter on different processes
         optimizer.zero_grad(set_to_none=True)
-
         loss.backward()
 
         ctx.buffer.next_epoch()
-
         pre_reduce = time.time()
         ctx.reducer.synchronize()
         reduce_time = time.time() - pre_reduce
+
+        # gradient aggregation ok
         optimizer.step()
 
         if epoch >= 5 and epoch % args.log_every != 0:
@@ -484,7 +496,7 @@ def run(graph, node_dict, gpb, args):
 
         del loss
 
-        # find the
+        # find the best model by validation accuracy
         if rank == 0 and args.eval and (epoch + 1) % args.log_every == 0:
             if thread is not None:
                 model_copy, val_acc = thread.get()
@@ -492,6 +504,8 @@ def run(graph, node_dict, gpb, args):
                     best_acc = val_acc
                     best_model = model_copy
             model_copy = copy.deepcopy(model)
+            
+            # submit the validation task to another thread
             if not args.inductive:
                 thread = pool.apply_async(
                     evaluate_trans,
@@ -514,12 +528,14 @@ def run(graph, node_dict, gpb, args):
                     )
                 )
 
+    # rank 0 process save the best model
     if args.eval and rank == 0:
         if thread is not None:
             model_copy, val_acc = thread.get()
             if val_acc > best_acc:
                 best_acc = val_acc
                 best_model = model_copy
+        os.makedirs('model/', exist_ok=True)
         torch.save(best_model.state_dict(), 'model/' + args.graph_name + '_final.pth.tar')
         print('model saved')
         print("Validation accuracy {:.2%}".format(best_acc))
