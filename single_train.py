@@ -87,6 +87,7 @@ def train(g, model):
     for e in range(epoch):
         # Forward
         # logits = model(features, g.adjacency_matrix().to_dense())
+        # print(type(g)) # <class 'dgl.heterograph.DGLGraph'>
         logits = model(g, features)
 
         # # Compute prediction
