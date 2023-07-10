@@ -3,7 +3,7 @@ import os
 import scipy
 import torch
 import dgl
-from dgl.data import RedditDataset,PubmedGraphDataset,CoraGraphDataset
+from dgl.data import RedditDataset, PubmedGraphDataset, CoraGraphDataset
 from dgl.distributed import partition_graph
 import torch.distributed as dist
 import time
@@ -111,7 +111,7 @@ def load_partition(args, rank):
     # graph_dir = 'partitions/' + args.graph_name + '/'
     # part_config = graph_dir + args.graph_name + '.json'
     graph_dir = get_graph_save_path(args)
-    part_config = get_graph_config_path(args,graph_dir)
+    part_config = get_graph_config_path(args, graph_dir)
 
     subg, node_feat, _, gpb, _, node_type, _ = dgl.distributed.load_partition(part_config, rank)
     node_type = node_type[0]
@@ -141,15 +141,17 @@ def load_partition(args, rank):
 
 
 def get_graph_save_path(args):
-    graph_dir = join("partitions",args.dataset,args.graph_name)
+    graph_dir = join("partitions", args.dataset, args.graph_name)
     return graph_dir
 
-def get_graph_config_path(args,graph_dir):
-    return join(graph_dir,args.graph_name+".json")
+
+def get_graph_config_path(args, graph_dir):
+    return join(graph_dir, args.graph_name+".json")
+
 
 def graph_partition(g, args):
     graph_dir = get_graph_save_path(args)
-    part_config = get_graph_config_path(args,graph_dir)
+    part_config = get_graph_config_path(args, graph_dir)
 
     # TODO: after being saved, a bool tensor becomes a uint8 tensor (including 'inner_node')
     if not os.path.exists(part_config):
@@ -158,7 +160,8 @@ def graph_partition(g, args):
                 g.ndata.pop('val_mask')
                 g.ndata.pop('test_mask')
             g.ndata['in_degree'] = g.in_degrees()
-            partition_graph(g, args.graph_name, args.n_partitions, graph_dir, part_method=args.partition_method, balance_edges=False, objtype=args.partition_obj)
+            partition_graph(g, args.graph_name, args.n_partitions, graph_dir,
+                            part_method=args.partition_method, balance_edges=False, objtype=args.partition_obj)
 
 
 def get_layer_size(n_feat, n_hidden, n_class, n_layers):
