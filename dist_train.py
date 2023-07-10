@@ -1,5 +1,5 @@
 import torch.nn.functional as F
-from module.model import *
+from module.fs_model import *
 from helper.utils import *
 import torch.distributed as dist
 import time
@@ -74,7 +74,6 @@ def average_gradients(model, n_train):
 
 
 def move_to_cuda(graph, part, node_dict):
-
     for key in node_dict.keys():
         node_dict[key] = node_dict[key].cuda()
     graph = graph.int().to(torch.device('cuda'))
@@ -101,6 +100,8 @@ def get_pos(node_dict, gpb):
 
 
 def get_recv_shape(node_dict):
+    # for the present process, the shape is None
+    # for the other process, the shape is the number of boundary nodes in both the other process and the present process
     rank, size = dist.get_rank(), dist.get_world_size()
     recv_shape = []
     for i in range(size):
@@ -113,6 +114,8 @@ def get_recv_shape(node_dict):
 
 
 def create_inner_graph(graph, node_dict):
+    # inner graph是边的起点与终点都是inner node的图
+    # 也就是说边完全在这个图里面，没有被子图划分给切割开
     u, v = graph.edges()
     sel = torch.logical_and(node_dict['inner_node'].bool()[u], node_dict['inner_node'].bool()[v])
     u, v = u[sel], v[sel]
@@ -182,26 +185,42 @@ def precompute(graph, node_dict, boundary, recv_shape, args):
     if args.model == 'graphsage':
         with graph.local_scope():
             graph.nodes['_U'].data['h'] = merge_feature(feat, recv_feat)
-            graph['_E'].update_all(fn.copy_src(src='h', out='m'),
-                                   fn.sum(msg='m', out='h'),
-                                   etype='_E')
+            graph['_E'].update_all(
+                # fn.copy_src(src='h', out='m'),
+                fn.copy_u(u='h', out='m'),
+                fn.sum(msg='m', out='h'),
+                etype='_E',
+            )
             mean_feat = graph.nodes['_V'].data['h'] / node_dict['in_degree'][0:in_size].unsqueeze(1)
         return torch.cat([feat, mean_feat[0:in_size]], dim=1)
     else:
         raise Exception
 
 
-def create_model(layer_size, args):
+def create_model(layer_size,mu, args):
     if args.model == 'graphsage':
-        return GraphSAGE(layer_size, F.relu, args.use_pp, norm=args.norm, dropout=args.dropout,
-                         n_linear=args.n_linear, train_size=args.n_train)
+        return GraphSAGEWithFS(
+            layer_size=layer_size,
+            activation=F.relu,
+            use_pp=args.use_pp,
+            sigma=args.sigma,
+            mu=mu,
+            fs=args.fs,
+            dropout=args.dropout,
+            norm=args.norm,
+            train_size=args.n_train,
+            n_linear=args.n_linear
+        )
     else:
         raise NotImplementedError
 
 
-def reduce_hook(param, name, n_train):
+def reduce_hook(param, name, args, optimizer:torch.optim.Optimizer):
     def fn(grad):
-        ctx.reducer.reduce(param, name, grad, n_train)
+        # OPT3
+        epoch = optimizer.state['step']
+        if get_update_flag(epoch, args):
+            ctx.reducer.reduce(param, name, grad, args.n_train)
     return fn
 
 
@@ -241,13 +260,27 @@ def extract(graph, node_dict):
     return graph, node_dict
 
 
+def get_update_flag(epoch, args):
+    return epoch % args.log_every == 0
+
+
 def run(graph, node_dict, gpb, args):
+    #   graph is the subgraph
+    #   node_dict:
+    #   part_id (int): the partition id of each node, from 0 to n_partitions-1
+    #       including the inner nodes and boundary nodes
+    #   inner_node: whether the node is inner node
+    #   torch.unique((node_dict['part_id']==0)==(node_dict['inner_node']))
+    #   tensor([True], device='cuda:0')
+    #   label, feat, in_degree: only for inner nodes
+    #   train_mask, val_mask, test_mask: only for inner nodes
     rank, size = dist.get_rank(), dist.get_world_size()
 
     torch.autograd.set_detect_anomaly(False)
     torch.autograd.profiler.profile(False)
     torch.autograd.profiler.emit_nvtx(False)
 
+    # load the whole graph
     if rank == 0 and args.eval:
         full_g, n_feat, n_class = load_data(args.dataset)
         if args.inductive:
@@ -256,49 +289,71 @@ def run(graph, node_dict, gpb, args):
             val_g, test_g = full_g.clone(), full_g.clone()
         del full_g
 
+    # record the training results
     if rank == 0:
         os.makedirs('checkpoint/', exist_ok=True)
         os.makedirs('results/', exist_ok=True)
 
+    # inner graph是边的起点与终点都是inner node的图
+    # dgl对于边界节点采取的策略是复制，即某条边连接的两个子图都拥有该边界节点
     part = create_inner_graph(graph.clone(), node_dict)
     num_in = node_dict['inner_node'].bool().sum().item()
     part.ndata.clear()
     part.edata.clear()
-
-    print(f'Process {rank} has {graph.num_nodes()} nodes, {graph.num_edges()} edges '
-          f'{part.num_nodes()} inner nodes, and {part.num_edges()} inner edges.')
+    print(f"num_in: {num_in}") # equal to part.num_nodes()
+    print(f'Process {rank} has {graph.num_nodes()} nodes, {graph.num_edges()} edges ,{part.num_nodes()} inner nodes, and {part.num_edges()} inner edges.')
 
     graph, part, node_dict = move_to_cuda(graph, part, node_dict)
-    boundary = get_boundary(node_dict, gpb)
     print("move_to_cuda")
+
+    # 获取边界节点
+    boundary = get_boundary(node_dict, gpb)
 
     layer_size = get_layer_size(args.n_feat, args.n_hidden, args.n_class, args.n_layers)
     # [500, 64, 16, 3]
-    layer_size = [args.n_feat, 64, 16, args.n_layers]
-    print(f"{layer_size}")
+    # [n_feat, n_hidden ...(n_layers-1), n_class]
+    layer_size = [args.n_feat, 64, 16, args.n_class]
+    if args.fs:
+        # [500, 500, 64, 16, 3]
+        # [n_feat, fs(n_feat), n_hidden ...(n_layers-1), n_class]
+        layer_size.insert(0,layer_size[0])
+    print(f"layer_size: {layer_size}")
 
     pos = get_pos(node_dict, gpb)
     graph = order_graph(part, graph, gpb, node_dict, pos)
+    # store the in_deg for inner nodes
     in_deg = node_dict['in_degree']
     print("order_graph")
 
     graph, node_dict, boundary = move_train_first(graph, node_dict, boundary)
     print("move_train_first")
 
+    # recv_shape有size个分量
+    # 对于第i个分量，如果i==rank，那么该分量为None
+    # 否则，该分量为第i个进程与当前进程的边界节点数，也就是待传输节点数
     recv_shape = get_recv_shape(node_dict)
     print(f"get_recv_shape {recv_shape}")
 
-    ctx.buffer.init_buffer(
-        num_in, graph.num_nodes('_U'), boundary,
-        recv_shape, layer_size[:args.n_layers-args.n_linear],
-        use_pp=args.use_pp, backend=args.backend,
-        pipeline=args.enable_pipeline, corr_feat=args.feat_corr,
-        corr_grad=args.grad_corr, corr_momentum=args.corr_momentum
+    ctx.buffer.init_buffer(        
+        num_in=num_in,
+        num_all=graph.num_nodes('_U'), 
+        boundary=boundary,
+        f_recv_shape=recv_shape, 
+        # layer_size=layer_size[:args.n_layers-args.n_linear],
+        layer_size=layer_size[:len(layer_size) - args.n_linear - 1],
+        use_pp=args.use_pp, 
+        backend=args.backend,
+        pipeline=args.enable_pipeline, 
+        corr_feat=args.feat_corr,
+        corr_grad=args.grad_corr, 
+        corr_momentum=args.corr_momentum
     )
     print("init_buffer")
 
     if args.use_pp:
+        print(node_dict['feat'].shape)
         node_dict['feat'] = precompute(graph, node_dict, boundary, recv_shape, args)
+        print(node_dict['feat'].shape)
 
     del boundary
     del part
@@ -315,23 +370,44 @@ def run(graph, node_dict, gpb, args):
     train_x = feat[train_mask]
     train_y = labels[train_mask]
     mu = feature_importance_gini(train_x, train_y)
-    model = create_model(layer_size, args)
-    model = GCN(
-        layer_size=layer_size,
-        dropout=args.dropout,
-        sigma=args.sigma,
-        mu=mu,
-        fs=args.fs,
-    )
+    model = create_model(layer_size,mu, args)
+    # model = GCN(
+    #     layer_size=layer_size,
+    #     dropout=args.dropout,
+    #     sigma=args.sigma,
+    #     mu=mu,
+    #     fs=args.fs,
+    # )
     model.cuda()
     print("model")
 
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=args.lr,
+        weight_decay=args.weight_decay
+    )
+
     # create the same type tensor with model parameters for parameter reducing on cpu
     ctx.reducer.init(model)
-    for i, (name, param) in enumerate(model.named_parameters()):
-        param.register_hook(reduce_hook(param, name, args.n_train))
     print("reducer init")
 
+    # OPT3
+    # reduce_hook在每次训练使用backward计算出梯度后都会被调用
+    # 但是目前希望在间隔几个epoch才进行梯度聚合
+    # 所以需要将epoch作为参数传进去
+    # 由于reduce_hook的参数需要在注册时绑定，所以需要将epoch放到一个类中
+    # 可以放到optimizer中
+    # tell optimizer the epoch
+    optimizer.state['step'] = 0
+    # register the hook for gradient reducing on cpu
+    # the hook will be called after the local gradient is computed
+    for i, (name, param) in enumerate(model.named_parameters()):
+        # OPT3: fs参数不需要聚合
+        if name.endswith("mu"):
+            continue
+        # param.register_hook(reduce_hook(param, name, args.n_train))
+        param.register_hook(reduce_hook(param, name, args, optimizer))
+        
     best_model, best_acc = None, 0
 
     if args.grad_corr and args.feat_corr:
@@ -360,12 +436,6 @@ def run(graph, node_dict, gpb, args):
     # else:
     #     loss_fcn = torch.nn.CrossEntropyLoss(reduction='sum')
 
-    optimizer = torch.optim.Adam(
-        model.parameters(),
-        lr=args.lr,
-        weight_decay=args.weight_decay
-    )
-
     train_dur, comm_dur, reduce_dur = [], [], []
     torch.cuda.reset_peak_memory_stats()
     thread = None
@@ -380,21 +450,29 @@ def run(graph, node_dict, gpb, args):
         node_dict.pop('val_mask')
         node_dict.pop('test_mask')
 
-    
     for epoch in range(args.n_epochs):
         print(f"[{rank}] epoch:{epoch}")
+
+        # OPT3: update the step in optimizer
+        optimizer.state['step'] = epoch
+        update_flag = get_update_flag(epoch, args)
+            
         t0 = time.time()
         model.train()
-        if args.model == 'graphsage':
-            # logits = model(graph, feat, in_deg)
-            logits = model(graph, feat)
-        else:
-            raise Exception
 
+        # forward
+        if args.model == 'graphsage':
+            logits = model(graph, feat, in_deg, update_flag)
+            # print(type(graph)) # <class 'dgl.heterograph.DGLGraph'>
+            # logits = model(graph, feat)
+        else:
+            raise NotImplementedError
+
+        # loss
         if args.inductive:
             loss = loss_func(
-                results=logits[train_mask],
-                labels=labels[train_mask],
+                results=logits,
+                labels=labels,
                 lamda=args.lamda,
                 sigma=args.sigma,
                 model=model,
@@ -417,22 +495,32 @@ def run(graph, node_dict, gpb, args):
         del logits
 
         optimizer.zero_grad(set_to_none=True)
-
+        # OPT3: calculate the gradients but aggregate the gradients periodically by reduce_hook and optimizer.state['step']
+        # reduce_hook will aggregate the gradients of the same parameter on different processes
         loss.backward()
+        # 这里实际上是在等待同步完成
+        # 需要更新时才会统计时间
+        if update_flag:
+            pre_reduce = time.time()
+            ctx.reducer.synchronize()
+            reduce_time = time.time() - pre_reduce
 
         ctx.buffer.next_epoch()
 
-        pre_reduce = time.time()
-        ctx.reducer.synchronize()
-        reduce_time = time.time() - pre_reduce
+        # gradient aggregation ok
+        # update the parameters
         optimizer.step()
 
-        if epoch >= 5 and epoch % args.log_every != 0:
+        # if epoch >= 5 and epoch % args.log_every != 0 :
+        if update_flag:
+            # 总的训练时间
             train_dur.append(time.time() - t0)
+            # 传输embedding的时间
             comm_dur.append(ctx.comm_timer.tot_time())
+            # 传输梯度的时间
             reduce_dur.append(reduce_time)
 
-        if (epoch + 1) % 10 == 0:
+        # if (epoch + 1) % 10 == 0:
             print("Process {:03d} | Epoch {:05d} | Time(s) {:.4f} | Comm(s) {:.4f} | Reduce(s) {:.4f} | Loss {:.4f}".format(
                   rank, epoch, np.mean(train_dur), np.mean(comm_dur), np.mean(reduce_dur), loss.item() / part_train))
 
@@ -440,14 +528,21 @@ def run(graph, node_dict, gpb, args):
 
         del loss
 
-        # find the
-        if rank == 0 and args.eval and (epoch + 1) % args.log_every == 0:
+        # find the best model by validation accuracy
+        if rank == 0 and args.eval and get_update_flag(epoch, args):
             if thread is not None:
                 model_copy, val_acc = thread.get()
                 if val_acc > best_acc:
                     best_acc = val_acc
                     best_model = model_copy
-            model_copy = copy.deepcopy(model)
+            # OP3: 在model里面加入了一个list[None|torch.Tensor]和一个torch.Tensor作为成员后
+            # torch.Tensor默认不支持深度拷贝，所以选择state_dict来拷贝
+            # model_copy = copy.deepcopy(model)
+            model_copy  = create_model(layer_size,mu, args)
+            model_copy.load_state_dict(model.state_dict())
+            
+            
+            # submit the validation task to another thread
             if not args.inductive:
                 thread = pool.apply_async(
                     evaluate_trans,
@@ -470,12 +565,14 @@ def run(graph, node_dict, gpb, args):
                     )
                 )
 
+    # rank 0 process save the best model
     if args.eval and rank == 0:
         if thread is not None:
             model_copy, val_acc = thread.get()
             if val_acc > best_acc:
                 best_acc = val_acc
                 best_model = model_copy
+        os.makedirs('model/', exist_ok=True)
         torch.save(best_model.state_dict(), 'model/' + args.graph_name + '_final.pth.tar')
         print('model saved')
         print("Validation accuracy {:.2%}".format(best_acc))

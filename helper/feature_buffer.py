@@ -54,7 +54,9 @@ class Buffer(object):
         self._recv_shape = f_recv_shape
 
         if backend == 'gloo':
+            # feat_cpu和grad_cpu是每一层的输出和梯度，存储在cpu上进行传输
             self._feat_cpu, self._grad_cpu = [None] * self._n_layers, [None] * self._n_layers
+            # f_recv_cpu和b_recv_cpu是接收到的每一层的输出和梯度
             self._f_recv_cpu, self._b_recv_cpu = [None] * self._n_layers, [None] * self._n_layers
             for i in range(self._n_layers):
                 if i == 0 and use_pp:
@@ -123,8 +125,10 @@ class Buffer(object):
             self._b_cuda_event[i] = torch.cuda.Event()
         self._corr_momentum = corr_momentum
         self._corr_feat, self._corr_grad = corr_feat, corr_grad
-        # self._pool = ThreadPool(processes=2*self._n_layers)
-        self._pool = ThreadPool(processes=2) # 不一定能创建这么大的线程池
+        # 对于每一层的输出，采用多线程异步收发
+        # 最奢侈的线程数是层数*2
+        self._pool = ThreadPool(processes=2*self._n_layers) # 不一定能创建这么大的线程池
+        # self._pool = ThreadPool(processes=2) 
         self.__init_pl_pr()
 
     def next_epoch(self):
@@ -145,6 +149,7 @@ class Buffer(object):
         torch.cuda.current_stream().synchronize()
         if self._pipeline is False:
             with comm_timer.timer(f'forward_{layer}'):
+                # 传输相应层的输出
                 self.__feat_transfer(self._epoch, layer, feat)
                 torch.cuda.current_stream().wait_event(self._f_cuda_event[layer])
             self._f_buf[layer] = self.__feat_concat(layer, feat)
@@ -169,10 +174,15 @@ class Buffer(object):
         self._comm_stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(self._comm_stream):
             for i in range(1, size):
+                # left接收，right发送
+                # 接收时，cpu接收，然后cpu拷贝到gpu
+                # 发送时，gpu拷贝到cpu，然后cpu发送
                 left = (rank - i + size) % size
                 right = (rank + i) % size
+                # left接收
                 r2 = dist.irecv(recv_cpu[left], tag=tag, src=left)
                 req2.put((r2, left))
+                # 发送时，gpu拷贝到cpu，然后cpu发送
                 if forward:
                     send_cpu[right].copy_(send_gpu[self._boundary[right]])
                 else:
@@ -183,6 +193,7 @@ class Buffer(object):
                 r, idx = req2.get()
                 # TODO: if r.is_completed() run following lines else next r (see issue #30723)
                 r.wait()
+                # 接收时，cpu接收，然后cpu拷贝到gpu
                 recv_gpu[idx].copy_(recv_cpu[idx], non_blocking=True)
                 if corr:
                     with torch.cuda.stream(self._corr_stream):
