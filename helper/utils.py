@@ -169,6 +169,7 @@ def get_layer_size(n_feat, n_hidden, n_class, n_layers):
 
 
 def get_boundary(node_dict, gpb):
+    # 获取边界节点
     rank, size = dist.get_rank(), dist.get_world_size()
     device = 'cuda'
     boundary = [None] * size
