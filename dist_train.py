@@ -43,17 +43,49 @@ def evaluate_induc(name, model, g, mode, result_file_name=None):
 
 
 @torch.no_grad()
-def evaluate_trans(name, model, g, result_file_name=None):
+def evaluate_trans(name, model, g, args, result_file_name=None):
     model.eval()
     model.cpu()
     feat, labels = g.ndata['feat'], g.ndata['label']
-    val_mask, test_mask = g.ndata['val_mask'], g.ndata['test_mask']
+    train_mask, test_mask, val_mask = g.ndata['train_mask'], g.ndata['test_mask'], g.ndata['val_mask']
+    # val_mask, test_mask = g.ndata['val_mask'], g.ndata['test_mask']
     logits = model(g, feat)
-    val_logits, test_logits = logits[val_mask], logits[test_mask]
-    val_labels, test_labels = labels[val_mask], labels[test_mask]
-    val_acc = calc_acc(val_logits, val_labels)
-    test_acc = calc_acc(test_logits, test_labels)
-    buf = "{:s} | Validation Accuracy {:.2%} | Test Accuracy {:.2%}".format(name, val_acc, test_acc)
+    # val_logits, test_logits = logits[val_mask], logits[test_mask]
+    # val_labels, test_labels = labels[val_mask], labels[test_mask]
+    train_acc = calc_acc(logits[train_mask], labels[train_mask])
+    test_acc = calc_acc(logits[test_mask], labels[test_mask])
+    val_acc = calc_acc(logits[val_mask], labels[val_mask])
+    buf = "{:s} | Train Accuracy {:.2%} | Test Accuracy {:.2%} | Validation Accuracy {:.2%}".format(name, train_acc, val_acc, test_acc)
+
+    train_loss = loss_func(
+                results=logits[train_mask],
+                labels=labels[train_mask],
+                lamda=args.lamda,
+                sigma=args.sigma,
+                model=model,
+                fs=args.fs,
+                args=args,
+            ) / train_mask.int().sum().item()
+    test_loss = loss_func(
+                results=logits[test_mask],
+                labels=labels[test_mask],
+                lamda=args.lamda,
+                sigma=args.sigma,
+                model=model,
+                fs=args.fs,
+                args=args,
+            ) / train_mask.int().sum().item()
+    val_loss = loss_func(
+                results=logits[val_mask],
+                labels=labels[val_mask],
+                lamda=args.lamda,
+                sigma=args.sigma,
+                model=model,
+                fs=args.fs,
+                args=args,
+            ) / val_mask.int().sum().item()
+    buf = buf + " | Train Loss {:.5f} | Test Loss {:.5f} | Validation Loss {:.5f}".format(train_loss, test_loss, val_loss)
+    
     if result_file_name is not None:
         with open(result_file_name, 'a+') as f:
             f.write(buf + '\n')
@@ -219,7 +251,7 @@ def reduce_hook(param, name, args, optimizer:torch.optim.Optimizer):
     def fn(grad):
         # OPT3
         epoch = optimizer.state['step']
-        print("epoch",name,epoch)
+        # print("epoch",name,epoch)
         # epoch layers.3.linear2.bias 98
         # epoch layers.3.linear2.weight 98
         # epoch layers.3.linear1.bias 98
@@ -553,7 +585,6 @@ def run(graph, node_dict, gpb, args):
             model_copy  = create_model(layer_size,mu, args)
             model_copy.load_state_dict(model.state_dict())
             
-            
             # submit the validation task to another thread
             if not args.inductive:
                 thread = pool.apply_async(
@@ -561,7 +592,8 @@ def run(graph, node_dict, gpb, args):
                     args=(
                         'Epoch %05d' % epoch,
                         model_copy,
-                        val_g,
+                        val_g, # full_g
+                        args,
                         result_file_name
                     )
                 )
@@ -571,7 +603,7 @@ def run(graph, node_dict, gpb, args):
                     args=(
                         'Epoch %05d' % epoch,
                         model_copy,
-                        val_g,
+                        val_g, # full_g
                         'val',
                         result_file_name
                     )
@@ -587,7 +619,10 @@ def run(graph, node_dict, gpb, args):
         os.makedirs('model/', exist_ok=True)
         torch.save(best_model.state_dict(), 'model/' + args.graph_name + '_final.pth.tar')
         print('model saved')
-        print("Validation accuracy {:.2%}".format(best_acc))
+        with open(result_file_name, 'a+') as f:
+            buf = str(args)+ "\n" + "Validation accuracy {:.2%}".format(best_acc)
+            f.write(buf + '\n')
+            print(buf)
         _, acc = evaluate_induc('Test Result', best_model, test_g, 'test')
 
 
