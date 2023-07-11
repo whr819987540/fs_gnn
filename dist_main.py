@@ -6,6 +6,7 @@ import torch.multiprocessing as mp
 from helper.utils import *
 import dist_train
 import warnings
+from time import time
 
 
 if __name__ == '__main__':
@@ -65,6 +66,10 @@ if __name__ == '__main__':
         # set how to start a new process
         mp.set_start_method('spawn', force=True)
         start_id = args.node_rank * args.parts_per_node
+
+        # 统计达到某一个准确率target_acc所用的时间
+        # 从启动partition个子进程开始到所有子进程退出
+        start_time = time()
         for i in range(start_id, min(start_id + args.parts_per_node, args.n_partitions)):
             # maybe different workers use the same gpu
             os.environ['CUDA_VISIBLE_DEVICES'] = devices[i % len(devices)]
@@ -73,6 +78,8 @@ if __name__ == '__main__':
             processes.append(p)
         for p in processes:
             p.join()
+        end_time = time()
+        print("time: ", end_time - start_time)
     elif args.backend == 'nccl':
         raise NotImplementedError
     elif args.backend == 'mpi':
