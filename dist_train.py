@@ -92,7 +92,7 @@ def evaluate_trans(name, model, g, args, result_file_name=None):
             print(buf)
     else:
         print(buf)
-    return model, val_acc
+    return model, train_acc, test_acc, val_acc
 
 
 def average_gradients(model, n_train):
@@ -494,7 +494,11 @@ def run(graph, node_dict, gpb, args):
         node_dict.pop('val_mask')
         node_dict.pop('test_mask')
 
-    for epoch in range(args.n_epochs):
+    # for epoch in range(args.n_epochs):
+    # 将终止条件更改为>=args.target_acc
+    epoch = 0
+    exit_flag = False
+    while not exit_flag:
         print(f"[{rank}] epoch:{epoch}")
 
         # OPT3: update the step in optimizer
@@ -573,15 +577,20 @@ def run(graph, node_dict, gpb, args):
         del loss
 
         # find the best model by validation accuracy
+        # 模型通过reduce_hook更新后再计算train、test、val的准确率
+        # 好处：减少模型的拷贝次数；在全局模型上使用全局图进行计算，而不是在子图、局部模型上计算
         if rank == 0 and args.eval and get_update_flag(epoch, args):
             if thread is not None:
-                model_copy, val_acc = thread.get()
+                model_copy, train_acc, test_acc, val_acc = thread.get()
                 if val_acc > best_acc:
                     best_acc = val_acc
                     best_model = model_copy
+                if test_acc >= args.target_acc:
+                    exit_flag = True
             # OP3: 在model里面加入了一个list[None|torch.Tensor]和一个torch.Tensor作为成员后
             # torch.Tensor默认不支持深度拷贝，所以选择state_dict来拷贝
             # model_copy = copy.deepcopy(model)
+            # copy只能在主线程里面进行
             model_copy  = create_model(layer_size,mu, args)
             model_copy.load_state_dict(model.state_dict())
             
@@ -609,10 +618,12 @@ def run(graph, node_dict, gpb, args):
                     )
                 )
 
+        epoch += 1
+
     # rank 0 process save the best model
     if args.eval and rank == 0:
         if thread is not None:
-            model_copy, val_acc = thread.get()
+            model_copy, train_acc, test_acc, val_acc = thread.get()
             if val_acc > best_acc:
                 best_acc = val_acc
                 best_model = model_copy
