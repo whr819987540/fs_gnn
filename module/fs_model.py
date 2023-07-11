@@ -98,7 +98,10 @@ class GraphSAGEWithFS(GNNBase):
                     # 首次训练时获取本地节点和边界节点的feature
                     # 评估时，直接使用该节点的feature即可
                     if self.training:
-                        if self.inner_boundary_nodes_feat is None:
+                        # if self.inner_boundary_nodes_feat is None:
+                        # 判断条件错误，inner_boundary_nodes_feat为None时确实需要更新
+                        # 但实际上，应该是update_flag为True必须更新
+                        if update_flag:
                             print("first training, get inner and boundary nodes feature")
                             self.inner_boundary_nodes_feat = ctx.buffer.update(i, h)
 
@@ -155,9 +158,7 @@ class GraphSAGEWithFS(GNNBase):
                                     # 但self.local_stored_boundary_nodes_embedding[i]可能在多轮训练中被使用，因此要把该变量从计算图中分离出来
                                     # 最简单的操作是直接分离结果h
                                     h = torch.concat([h, self.local_stored_boundary_nodes_embedding[i]], dim=0)
-                                    print(h.requires_grad)
                                     h = h.detach().requires_grad_(True)
-                                    print(h.requires_grad)
 
                                 after = h.shape
                                 # torch.unique(before_h[:921]==h[before_h.shape[0]:])
@@ -199,7 +200,10 @@ class GraphSAGEWithFS(GNNBase):
                         # 首次训练时获取本地节点和边界节点的feature
                         # 评估时，直接使用该节点的feature即可
                         if i == 0:
-                            if self.inner_boundary_nodes_feat is None:
+                            # if self.inner_boundary_nodes_feat is None:
+                            # 判断条件错误，inner_boundary_nodes_feat为None时确实需要更新
+                            # 但实际上，应该是update_flag为True必须更新
+                            if update_flag:
                                 print("first training, get inner and boundary nodes feature")
                                 self.inner_boundary_nodes_feat = ctx.buffer.update(i, h)
 
