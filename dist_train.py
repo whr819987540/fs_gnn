@@ -54,6 +54,13 @@ def evaluate_trans(name, model, g, args, result_file_name=None):
     # val_labels, test_labels = labels[val_mask], labels[test_mask]
     train_acc = calc_acc(logits[train_mask], labels[train_mask])
     test_acc = calc_acc(logits[test_mask], labels[test_mask])
+    # OPT4: 将新计算的test_acc广播给其他进程
+    # 此时其它进程处于阻塞状态，直到收到广播的test_acc
+    # 因此广播行为需要尽快进行
+    print("before broadcast_test_acc")
+    broadcast_test_acc(torch.Tensor([test_acc]))
+    print("after broadcast_test_acc")
+    
     val_acc = calc_acc(logits[val_mask], labels[val_mask])
     buf = "{:s} | Train Accuracy {:.2%} | Test Accuracy {:.2%} | Validation Accuracy {:.2%}".format(name, train_acc, val_acc, test_acc)
 
@@ -577,6 +584,7 @@ def run(graph, node_dict, gpb, args):
         del loss
 
         # find the best model by validation accuracy
+        # rank 0 process 使用全局模型在全图上计算acc与loss
         # 模型通过reduce_hook更新后再计算train、test、val的准确率
         # 好处：减少模型的拷贝次数；在全局模型上使用全局图进行计算，而不是在子图、局部模型上计算
         if rank == 0 and args.eval and get_update_flag(epoch, args):
@@ -587,6 +595,7 @@ def run(graph, node_dict, gpb, args):
                     best_model = model_copy
                 if test_acc >= args.target_acc:
                     exit_flag = True
+
             # OP3: 在model里面加入了一个list[None|torch.Tensor]和一个torch.Tensor作为成员后
             # torch.Tensor默认不支持深度拷贝，所以选择state_dict来拷贝
             # model_copy = copy.deepcopy(model)
@@ -617,6 +626,15 @@ def run(graph, node_dict, gpb, args):
                         result_file_name
                     )
                 )
+        # OP4: 非rank 0 process 接收rank 0传来的test_acc以优雅地退出while循环
+        if rank != 0 and args.eval and get_update_flag(epoch, args):
+            test_acc = torch.empty(1)
+            print(f"[{rank}] wait for test_acc")
+            broadcast_test_acc(test_acc)
+            test_acc = test_acc[0].item()
+            print(f"[{rank}] recv test_acc {test_acc}")
+            if test_acc >= args.target_acc:
+                exit_flag = True
 
         epoch += 1
 
@@ -644,6 +662,9 @@ def check_parser(args):
     if args.norm == 'none':
         args.norm = None
 
+
+def broadcast_test_acc(test_acc:torch.Tensor):
+    dist.broadcast(test_acc, src=0)
 
 def init_processes(rank, size, args):
     """ Initialize the distributed environment. """
