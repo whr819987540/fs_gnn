@@ -219,6 +219,18 @@ def reduce_hook(param, name, args, optimizer:torch.optim.Optimizer):
     def fn(grad):
         # OPT3
         epoch = optimizer.state['step']
+        print("epoch",name,epoch)
+        # epoch layers.3.linear2.bias 98
+        # epoch layers.3.linear2.weight 98
+        # epoch layers.3.linear1.bias 98
+        # epoch layers.3.linear1.weight 98
+        # epoch norm.2.weight 98
+        # epoch norm.2.bias 98
+        # epoch layers.2.linear2.bias 98
+        # epoch layers.2.linear2.weight 98
+        # epoch layers.2.linear1.bias 98
+        # epoch layers.2.linear1.weight 98
+
         if get_update_flag(epoch, args):
             ctx.reducer.reduce(param, name, grad, args.n_train)
     return fn
