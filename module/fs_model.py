@@ -144,10 +144,20 @@ class GraphSAGEWithFS(GNNBase):
                                 # 使用其它进程存储的边界节点的embedding来更新
                                 if update_flag:
                                     h = ctx.buffer.update(i, h)
-                                    self.local_stored_boundary_nodes_embedding[i] = h[before_h.shape[0]:]
+                                    # 底层空间共用，但是不参与反向传播
+                                    self.local_stored_boundary_nodes_embedding[i] = h[before_h.shape[0]:].detach()
+                                    # print(h.requires_grad, self.local_stored_boundary_nodes_embedding[i].requires_grad)
+                                    # True, False
                                 # 使用本地存储的边界节点的embedding来更新
                                 else:
-                                    h = torch.concat([h, self.local_stored_boundary_nodes_embedding[i]], dim=0)        
+                                    # concat涉及到h和self.local_stored_boundary_nodes_embedding[i]的计算
+                                    # 因此需要将self.local_stored_boundary_nodes_embedding[i]也会参与反向传播
+                                    # 但self.local_stored_boundary_nodes_embedding[i]可能在多轮训练中被使用，因此要把该变量从计算图中分离出来
+                                    # 最简单的操作是直接分离结果h
+                                    h = torch.concat([h, self.local_stored_boundary_nodes_embedding[i]], dim=0)
+                                    print(h.requires_grad)
+                                    h = h.detach().requires_grad_(True)
+                                    print(h.requires_grad)
 
                                 after = h.shape
                                 # torch.unique(before_h[:921]==h[before_h.shape[0]:])
