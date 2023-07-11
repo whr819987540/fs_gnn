@@ -635,6 +635,9 @@ def run(graph, node_dict, gpb, args):
             f.write(buf + '\n')
             print(buf)
         _, acc = evaluate_induc('Test Result', best_model, test_g, 'test')
+        print(f"model param grad communication volume {ctx.reducer.communication_volume}")
+
+    print(f"[{rank}] feature and embedding communication volume {ctx.buffer.communication_volume}")
 
 
 def check_parser(args):
