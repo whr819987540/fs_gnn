@@ -62,7 +62,6 @@ def evaluate_trans(name, model, g, args, result_file_name=None):
     print("after broadcast_test_acc")
     
     val_acc = calc_acc(logits[val_mask], labels[val_mask])
-    buf = "{:s} | Train Accuracy {:.2%} | Test Accuracy {:.2%} | Validation Accuracy {:.2%}".format(name, train_acc, val_acc, test_acc)
 
     train_loss = loss_func(
                 results=logits[train_mask],
@@ -91,7 +90,8 @@ def evaluate_trans(name, model, g, args, result_file_name=None):
                 fs=args.fs,
                 args=args,
             ) / val_mask.int().sum().item()
-    buf = buf + " | Train Loss {:.5f} | Test Loss {:.5f} | Validation Loss {:.5f}".format(train_loss, test_loss, val_loss)
+    
+    buf = "{:s} | Train Accuracy {:.2%} | Test Accuracy {:.2%} | Validation Accuracy {:.2%} | Train Loss {:.5f} | Test Loss {:.5f} | Validation Loss {:.5f}".format(name, train_acc, test_acc, val_acc, train_loss, test_loss, val_loss)
     
     if result_file_name is not None:
         with open(result_file_name, 'a+') as f:
@@ -490,7 +490,7 @@ def run(graph, node_dict, gpb, args):
     train_dur, comm_dur, reduce_dur = [], [], []
     torch.cuda.reset_peak_memory_stats()
     thread = None
-    pool = ThreadPool(processes=1)
+    # pool = ThreadPool(processes=1)
 
     node_dict.pop('train_mask')
     node_dict.pop('inner_node')
@@ -588,13 +588,13 @@ def run(graph, node_dict, gpb, args):
         # 模型通过reduce_hook更新后再计算train、test、val的准确率
         # 好处：减少模型的拷贝次数；在全局模型上使用全局图进行计算，而不是在子图、局部模型上计算
         if rank == 0 and args.eval and get_update_flag(epoch, args):
-            if thread is not None:
-                model_copy, train_acc, test_acc, val_acc = thread.get()
-                if val_acc > best_acc:
-                    best_acc = val_acc
-                    best_model = model_copy
-                if test_acc >= args.target_acc:
-                    exit_flag = True
+            # if thread is not None:
+            #     model_copy, train_acc, test_acc, val_acc = thread.get()
+            #     if val_acc > best_acc:
+            #         best_acc = val_acc
+            #         best_model = model_copy
+            #     if test_acc >= args.target_acc:
+            #         exit_flag = True
 
             # OP3: 在model里面加入了一个list[None|torch.Tensor]和一个torch.Tensor作为成员后
             # torch.Tensor默认不支持深度拷贝，所以选择state_dict来拷贝
@@ -602,30 +602,57 @@ def run(graph, node_dict, gpb, args):
             # copy只能在主线程里面进行
             model_copy  = create_model(layer_size,mu, args)
             model_copy.load_state_dict(model.state_dict())
-            
-            # submit the validation task to another thread
+
+            # OPT5: do evaluation and test_acc broadcast in main thread
             if not args.inductive:
-                thread = pool.apply_async(
-                    evaluate_trans,
-                    args=(
-                        'Epoch %05d' % epoch,
-                        model_copy,
-                        val_g, # full_g
-                        args,
-                        result_file_name
-                    )
+                model_copy, train_acc, test_acc, val_acc = evaluate_trans(
+                    'Epoch %05d' % epoch,
+                    model_copy,
+                    val_g, # full_g
+                    args,
+                    result_file_name
                 )
+                
+                if val_acc > best_acc:
+                    best_acc = val_acc
+                    best_model = model_copy
+
+                if test_acc >= args.target_acc:
+                    exit_flag = True
+
             else:
-                thread = pool.apply_async(
-                    evaluate_induc,
-                    args=(
-                        'Epoch %05d' % epoch,
-                        model_copy,
-                        val_g, # full_g
-                        'val',
-                        result_file_name
-                    )
+                model_copy,  val_acc = evaluate_induc(
+                    'Epoch %05d' % epoch,
+                    model_copy,
+                    val_g, # full_g
+                    'val',
+                    result_file_name
                 )
+
+            # # submit the validation task to another thread
+            # if not args.inductive:
+            #     thread = pool.apply_async(
+            #         evaluate_trans,
+            #         args=(
+            #             'Epoch %05d' % epoch,
+            #             model_copy,
+            #             val_g, # full_g
+            #             args,
+            #             result_file_name
+            #         )
+            #     )
+            # else:
+            #     thread = pool.apply_async(
+            #         evaluate_induc,
+            #         args=(
+            #             'Epoch %05d' % epoch,
+            #             model_copy,
+            #             val_g, # full_g
+            #             'val',
+            #             result_file_name
+            #         )
+            #     )
+            
         # OP4: 非rank 0 process 接收rank 0传来的test_acc以优雅地退出while循环
         if rank != 0 and args.eval and get_update_flag(epoch, args):
             test_acc = torch.empty(1)
