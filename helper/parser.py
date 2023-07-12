@@ -71,7 +71,6 @@ def create_parser():
                         help="add fs layer")
     parser.add_argument('--no-fs', action='store_false', dest='eval',
                         help="don't add fs layer")
-    parser.add_argument("--target-acc", "--target_acc", type=float, default=0.8)
     
     parser.set_defaults(eval=True)
 

@@ -70,7 +70,8 @@ if __name__ == '__main__':
         # 子进程向主进程传输执行结果
         queue = mp.Queue()
 
-        # 统计达到某一个准确率target_acc所用的时间
+        # 统计训练一定轮数所用的时间
+        # 实际训练轮数由rank=0的进程返回
         # 从启动partition个子进程开始到所有子进程退出
         start_time = time()
         for i in range(start_id, min(start_id + args.parts_per_node, args.n_partitions)):
@@ -98,7 +99,7 @@ if __name__ == '__main__':
             feature_embedding_communication_volume += tmp
             print(f"[{ret['rank']}] feature and embedding communication volume {tmp}")
 
-        print(f"args: update_freq {args.log_every}, {'fs' if args.fs else 'no-fs'}, lr {args.lr}, target-acc {args.target_acc},epoch {epoch}")
+        print(f"args: update_freq {args.log_every}, {'fs' if args.fs else 'no-fs'}, lr {args.lr}, training times {epoch+1}")
         print(f"model param grad communication volume\t{model_param_grad_communication_volume}")
         print(f"feature and embedding communication volume\t{feature_embedding_communication_volume}")
     elif args.backend == 'nccl':
