@@ -67,19 +67,40 @@ if __name__ == '__main__':
         mp.set_start_method('spawn', force=True)
         start_id = args.node_rank * args.parts_per_node
 
+        # 子进程向主进程传输执行结果
+        queue = mp.Queue()
+
         # 统计达到某一个准确率target_acc所用的时间
         # 从启动partition个子进程开始到所有子进程退出
         start_time = time()
         for i in range(start_id, min(start_id + args.parts_per_node, args.n_partitions)):
             # maybe different workers use the same gpu
             os.environ['CUDA_VISIBLE_DEVICES'] = devices[i % len(devices)]
-            p = mp.Process(target=dist_train.init_processes, args=(i, args.n_partitions, args))
+            p = mp.Process(target=dist_train.init_processes, args=(i, args.n_partitions, queue, args))
             p.start()
             processes.append(p)
         for p in processes:
             p.join()
         end_time = time()
         print("time: ", end_time - start_time)
+
+        # 获取子进程的执行结果
+        model_param_grad_communication_volume = 0
+        feature_embedding_communication_volume = 0
+        epoch = 0
+        while not queue.empty():
+            ret = queue.get()
+            if ret['rank'] == 0:
+                model_param_grad_communication_volume = ret['model_param_grad_communication_volume']
+                epoch = ret['epoch']
+
+            tmp = ret['feature_embedding_communication_volume']
+            feature_embedding_communication_volume += tmp
+            print(f"[{ret['rank']}] feature and embedding communication volume {tmp}")
+
+        print(f"args: update_freq {args.log_every}, {'fs' if args.fs else 'no-fs'}, lr {args.lr}, target-acc {args.target_acc},epoch {epoch}")
+        print(f"model param grad communication volume\t{model_param_grad_communication_volume}")
+        print(f"feature and embedding communication volume\t{feature_embedding_communication_volume}")
     elif args.backend == 'nccl':
         raise NotImplementedError
     elif args.backend == 'mpi':

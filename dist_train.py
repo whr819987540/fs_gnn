@@ -315,7 +315,7 @@ def get_update_flag(epoch, args):
     return epoch % args.log_every == 0
 
 
-def run(graph, node_dict, gpb, args):
+def run(graph, node_dict, gpb, queue, args):
     #   graph is the subgraph
     #   node_dict:
     #   part_id (int): the partition id of each node, from 0 to n_partitions-1
@@ -505,7 +505,7 @@ def run(graph, node_dict, gpb, args):
     # 将终止条件更改为>=args.target_acc
     epoch = 0
     exit_flag = False
-    while not exit_flag:
+    while True:
         print(f"[{rank}] epoch:{epoch}")
 
         # OPT3: update the step in optimizer
@@ -663,7 +663,14 @@ def run(graph, node_dict, gpb, args):
             if test_acc >= args.target_acc:
                 exit_flag = True
 
-        epoch += 1
+        if exit_flag:
+            break
+        else:
+            epoch += 1
+
+    ret = {
+        "rank":rank,
+    }
 
     # rank 0 process save the best model
     if args.eval and rank == 0:
@@ -680,9 +687,14 @@ def run(graph, node_dict, gpb, args):
             f.write(buf + '\n')
             print(buf)
         _, acc = evaluate_induc('Test Result', best_model, test_g, 'test')
-        print(f"model param grad communication volume {ctx.reducer.communication_volume}")
+        # print(f"model param grad communication volume {ctx.reducer.communication_volume}")
+        ret['model_param_grad_communication_volume'] = ctx.reducer.communication_volume
+        ret['epoch'] = epoch
 
-    print(f"[{rank}] feature and embedding communication volume {ctx.buffer.communication_volume}")
+    # print(f"[{rank}] feature and embedding communication volume {ctx.buffer.communication_volume}")
+    ret['feature_embedding_communication_volume'] = ctx.buffer.communication_volume
+    # 将结果从子进程发送给主进程
+    queue.put(ret)
 
 
 def check_parser(args):
@@ -693,7 +705,7 @@ def check_parser(args):
 def broadcast_test_acc(test_acc:torch.Tensor):
     dist.broadcast(test_acc, src=0)
 
-def init_processes(rank, size, args):
+def init_processes(rank, size, queue, args):
     """ Initialize the distributed environment. """
     os.environ['MASTER_ADDR'] = args.master_addr
     os.environ['MASTER_PORT'] = '%d' % args.port
@@ -706,4 +718,4 @@ def init_processes(rank, size, args):
     # load the partition which has been saved on the disk
     g, node_dict, gpb = load_partition(args, rank)
     print(f"[{rank}] start running")
-    run(g, node_dict, gpb, args)
+    run(g, node_dict, gpb, queue, args)
