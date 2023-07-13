@@ -3,7 +3,8 @@ from multiprocessing.pool import ThreadPool
 from multiprocessing import Event
 from helper.timer.timer import *
 import queue
-
+from threading import Lock
+from helper.utils import *
 
 class Buffer(object):
 
@@ -29,6 +30,8 @@ class Buffer(object):
         self._corr_momentum = 0
         self._corr_feat, self._corr_grad = False, False
         self._pl, self._pr = [], []
+        self.communication_volume = 0 # 所有进程统计feature+embedding的通信量
+        self.lock = Lock() # 互斥锁访问communication_volume
 
     def __init_pl_pr(self):
         self._pl, self._pr = [], []
@@ -152,9 +155,12 @@ class Buffer(object):
                 # 传输相应层的输出
                 self.__feat_transfer(self._epoch, layer, feat)
                 torch.cuda.current_stream().wait_event(self._f_cuda_event[layer])
+                
             self._f_buf[layer] = self.__feat_concat(layer, feat)
+
             if self._f_buf[layer].requires_grad:
                 self._f_buf[layer].register_hook(self.__grad_hook(self._epoch, layer))
+
             return self._f_buf[layer]
         else:
             if self._epoch > 0:
@@ -179,9 +185,11 @@ class Buffer(object):
                 # 发送时，gpu拷贝到cpu，然后cpu发送
                 left = (rank - i + size) % size
                 right = (rank + i) % size
+
                 # left接收
                 r2 = dist.irecv(recv_cpu[left], tag=tag, src=left)
                 req2.put((r2, left))
+
                 # 发送时，gpu拷贝到cpu，然后cpu发送
                 if forward:
                     send_cpu[right].copy_(send_gpu[self._boundary[right]])
@@ -189,6 +197,14 @@ class Buffer(object):
                     send_cpu[right].copy_(send_gpu[self._pl[right]:self._pr[right]])
                 r1 = dist.isend(send_cpu[right], tag=tag, dst=right)
                 req1.append(r1)
+
+                # 统计通信量
+                with self.lock:
+                    # self.communication_volume += send_cpu[right].numel() * send_cpu[right].element_size()
+                    # # 压缩稀疏矩阵传输
+                    # self.communication_volume += sparse_matrix_transfer_bytes( matrix_to_sparse_matrix(send_cpu[right]))
+                    self.communication_volume += send_cpu[right].numel() * send_cpu[right].element_size()
+
             while not req2.empty():
                 r, idx = req2.get()
                 # TODO: if r.is_completed() run following lines else next r (see issue #30723)
