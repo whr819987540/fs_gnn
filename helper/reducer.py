@@ -1,7 +1,8 @@
 import torch
 import torch.distributed as dist
 from multiprocessing.pool import ThreadPool
-
+from torch import distributed as dist
+from threading import Lock
 
 class Reducer(object):
 
@@ -11,7 +12,11 @@ class Reducer(object):
         self._pool = None
         self._handles = []
         self._stream = None
-
+        self.communication_volume = 0 # rank 0的进程统计梯度的通信量
+        self.lock = Lock() # 互斥锁访问communication_volume
+        self.partitions = None # 总的进程数
+        self.rank = None # 当前进程的rank
+        
     def init(self, model):
         cnt = 0
         for i, (name, param) in enumerate(model.named_parameters()):
@@ -22,9 +27,10 @@ class Reducer(object):
             # 根据内存情况选择是否开启
             self._data_cpu[name] = (torch.zeros_like(param.data, pin_memory=False, device='cpu'), dist.new_group())
             print("dist.new_group() ok")
-        # self._pool = ThreadPool(processes=cnt) # 不一定能创建这么多线程
-        self._pool = ThreadPool(processes=2) 
+        self._pool = ThreadPool(processes=cnt) # 不一定能创建这么多线程
+        # self._pool = ThreadPool(processes=2) 
         self._stream = torch.cuda.Stream()
+        self.rank, self.partitions = dist.get_rank(), dist.get_world_size()
 
     def reduce(self, param, name, data, n_train):
         def create_stream():
@@ -35,6 +41,13 @@ class Reducer(object):
                 data_cpu.copy_(data)
                 dist.all_reduce(data_cpu, op=dist.ReduceOp.SUM, group=group)
                 param.grad.copy_(data_cpu, non_blocking=True)
+
+            if self.rank == 0:
+                with self.lock:
+                    # *2是因为all_reduce被认为有两个过程
+                    # reduce: 其它process向rank 0发送
+                    # braodcase: rank 0向其它process发送
+                    self.communication_volume += data_cpu.numel() * data.element_size() * (self.partitions - 1) * 2
 
         self._handles.append(self._pool.apply_async(create_stream))
 
