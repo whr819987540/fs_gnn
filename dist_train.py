@@ -8,7 +8,7 @@ from multiprocessing.pool import ThreadPool
 from sklearn.metrics import f1_score
 from new_layer import feature_importance_gini, loss_func
 from single_model import GCN
-
+from torch.utils.tensorboard import SummaryWriter
 
 def calc_acc(logits, labels):
     if labels.dim() == 1:
@@ -43,7 +43,7 @@ def evaluate_induc(name, model, g, mode, result_file_name=None):
 
 
 @torch.no_grad()
-def evaluate_trans(name, model, g, args, result_file_name=None):
+def evaluate_trans(name, model, g, args, epoch:int, writer:SummaryWriter, result_file_name=None):
     model.eval()
     model.cpu()
     feat, labels = g.ndata['feat'], g.ndata['label']
@@ -92,6 +92,13 @@ def evaluate_trans(name, model, g, args, result_file_name=None):
             print(buf)
     else:
         print(buf)
+    writer.add_scalar("train_acc", train_acc, epoch)
+    writer.add_scalar("test_acc", test_acc, epoch)
+    writer.add_scalar("val_acc", val_acc, epoch)
+    writer.add_scalar("train_loss", train_loss, epoch)
+    writer.add_scalar("test_loss", test_loss, epoch)
+    writer.add_scalar("val_loss", val_loss, epoch)
+
     return model, train_acc, test_acc, val_acc
 
 
@@ -494,6 +501,8 @@ def run(graph, node_dict, gpb, queue, args):
         node_dict.pop('val_mask')
         node_dict.pop('test_mask')
 
+    writer = get_writer("dist", "gpu", "fs" if args.fs else "no fs", f"dataset={args.dataset}", f"layer={layer_size} lr={args.lr}", f"partition {args.n_partitions}", now_str())
+
     for epoch in range(args.n_epochs):
         print(f"[{rank}] epoch:{epoch}")
 
@@ -599,6 +608,8 @@ def run(graph, node_dict, gpb, queue, args):
                         model_copy,
                         val_g, # full_g
                         args,
+                        epoch,
+                        writer,
                         result_file_name
                     )
                 )
@@ -625,6 +636,7 @@ def run(graph, node_dict, gpb, queue, args):
             if val_acc > best_acc:
                 best_acc = val_acc
                 best_model = model_copy
+            
         os.makedirs('model/', exist_ok=True)
         torch.save(best_model.state_dict(), 'model/' + args.graph_name + '_final.pth.tar')
         print('model saved')
@@ -633,11 +645,17 @@ def run(graph, node_dict, gpb, queue, args):
             f.write(buf + '\n')
             print(buf)
         _, acc = evaluate_induc('Test Result', best_model, test_g, 'test')
-        # print(f"model param grad communication volume {ctx.reducer.communication_volume}")
+        
+        # 所有进程传梯度的通信量
         ret['model_param_grad_communication_volume'] = ctx.reducer.communication_volume
+        # 实际执行的轮数
         ret['epoch'] = epoch
-
-    # print(f"[{rank}] feature and embedding communication volume {ctx.buffer.communication_volume}")
+        # writer的thread_lock不可序列化，所以不能将writer放在字典中
+        # 然后通过队列传给主进程
+        ret['writer_path'] = writer.log_dir
+        writer.close()
+        
+    # 当前进程传输embedding的通信量
     ret['feature_embedding_communication_volume'] = ctx.buffer.communication_volume
     # 将结果从子进程发送给主进程
     queue.put(ret)
