@@ -289,3 +289,11 @@ def get_writer(*tags):
 
 def now_str():
     return datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+
+
+def matrix_to_sparse_matrix(matrix:torch.Tensor)->torch.Tensor:
+    return matrix.to_sparse()
+
+
+def sparse_matrix_transfer_bytes(matrix:torch.Tensor)->int:
+    return matrix.indices().numel() * matrix.indices().element_size() + matrix.values().numel() * matrix.values().element_size()
