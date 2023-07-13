@@ -7,6 +7,9 @@ from helper.utils import *
 import dist_train
 import warnings
 from time import time
+from torch.utils.tensorboard import SummaryWriter
+from time import sleep
+from os.path import join
 
 
 if __name__ == '__main__':
@@ -88,20 +91,35 @@ if __name__ == '__main__':
         # 获取子进程的执行结果
         model_param_grad_communication_volume = 0
         feature_embedding_communication_volume = 0
+        feature_embedding_communication_volume_list = [0]*args.n_partitions
         epoch = 0
+        
         while not queue.empty():
             ret = queue.get()
             if ret['rank'] == 0:
                 model_param_grad_communication_volume = ret['model_param_grad_communication_volume']
                 epoch = ret['epoch']
+                writer_path = ret['writer_path']
 
             tmp = ret['feature_embedding_communication_volume']
+            feature_embedding_communication_volume_list[ret['rank']] = tmp
             feature_embedding_communication_volume += tmp
             print(f"[{ret['rank']}] feature and embedding communication volume {tmp}")
 
         print(f"args: update_freq {args.log_every}, {'fs' if args.fs else 'no-fs'}, lr {args.lr}, training times {epoch+1}")
         print(f"model param grad communication volume\t{model_param_grad_communication_volume}")
         print(f"feature and embedding communication volume\t{feature_embedding_communication_volume}")
+
+        writer = SummaryWriter(f"{ret['writer_path']} result")
+        
+        writer.add_text("args", f"update_freq {args.log_every}, {'fs' if args.fs else 'no-fs'}, lr {args.lr}, training times {epoch+1}", 0)
+        writer.add_text("model_param_grad_communication_volume", f"{model_param_grad_communication_volume}", 0)
+        
+        for i in range(args.n_partitions):
+            writer.add_text(f"[{i}]feature and embedding communication volume", f"{feature_embedding_communication_volume_list[i]}", 0)
+            
+        writer.add_text("feature_and_embedding_communication_volume", f"{feature_embedding_communication_volume}", 0)
+        
     elif args.backend == 'nccl':
         raise NotImplementedError
     elif args.backend == 'mpi':
