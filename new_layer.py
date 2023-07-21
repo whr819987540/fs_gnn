@@ -35,6 +35,7 @@ class FSLayer(nn.Module):
         self.sigma = sigma
         self.dim = dim
         self.reset_parameters(mu)
+        self.run_time = 0
 
     def reset_parameters(self, mu):  # 初始化训练参数
         with torch.no_grad():
@@ -64,7 +65,6 @@ def gini_impurity(labels):
     probabilities = counts.float() / len(labels)
     gini = 1 - torch.sum(probabilities ** 2)
     return gini
-
 
 
 # def feature_importance_gini(X, y):
@@ -100,8 +100,8 @@ def gini_impurity(labels):
 def feature_importance_gini(X, y):
     # 定义了新的Tensor，importance、mu，但没有和X、y直接运算
     n_features = X.shape[1]
-    importance = torch.zeros(n_features)
-    mu = torch.zeros(n_features)
+    importance = torch.zeros(n_features, device=X.device)
+    mu = torch.zeros(n_features, device=X.device)
 
     for i in range(n_features):
         feature_values = X[:, i]
@@ -114,7 +114,7 @@ def feature_importance_gini(X, y):
             weight = len(y[mask]) / len(y)
             impurities.append(impurity * weight)
 
-        importance[i] = torch.sum(torch.tensor(impurities))
+        importance[i] = torch.sum(torch.tensor(impurities, device=X.device))
         mu[i] = 1 / importance[i]
 
     proportion = 1 / torch.max(mu)
