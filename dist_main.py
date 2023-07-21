@@ -100,6 +100,8 @@ if __name__ == '__main__':
                 model_param_grad_communication_volume = ret['model_param_grad_communication_volume']
                 epoch = ret['epoch']
                 writer_path = ret['writer_path']
+                fs_run_time = ret['fs_run_time']
+                normal_run_time = ret['normal_run_time']
 
             tmp = ret['feature_embedding_communication_volume']
             feature_embedding_communication_volume_list[ret['rank']] = tmp
