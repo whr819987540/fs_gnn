@@ -3,6 +3,8 @@ from torch import nn
 from module.sync_bn import SyncBatchNorm
 from helper import context as ctx
 from new_layer import FSLayer
+from torch import distributed as dist
+from time import time
 
 
 class GNNBase(nn.Module):
@@ -48,6 +50,8 @@ class GraphSAGEWithFS(GNNBase):
         # 形状为[boundary_nodes_num, layer_size[i]], i>=2
         # 如果没有fs，0存储的是None
         self.local_stored_boundary_nodes_embedding = [None] * self.n_layers
+        self.fs_run_time = 0
+        self.normal_run_time = 0
 
         if self.fs:
             for i in range(self.n_layers):
@@ -91,6 +95,7 @@ class GraphSAGEWithFS(GNNBase):
         # OPT3: update_flag只对train模式有效
         h = feat
         if self.fs:
+            rank = dist.get_rank()
             for i in range(self.n_layers):
                 # fs层
                 if i == 0:
@@ -109,15 +114,18 @@ class GraphSAGEWithFS(GNNBase):
                         h = self.inner_boundary_nodes_feat
                     
                     # 比较fs前后0数量的变化
-                    self.feature_zero += zero_count(h)
-                    before = h.shape
+                    # self.feature_zero += zero_count(h)
+                    # before = h.shape
+                    start = time()
                     h = self.layers[0](h)
+                    end = time()
+                    self.fs_run_time += end - start
                     h = self.dropout(h)
-                    after = h.shape
-                    self.feature_fs_zero += zero_count(h)
-                    self.feature_num += h.numel()
-                    print("fs layer",before,after)
-                    print(self.feature_num, self.feature_zero, self.feature_fs_zero)
+                    # after = h.shape
+                    # self.feature_fs_zero += zero_count(h)
+                    # self.feature_num += h.numel()
+                    # print("fs layer",before,after)
+                    # print(self.feature_num, self.feature_zero, self.feature_fs_zero)
                     
                     # # 比较fs前后0数量的变化
                     # self.feature_zero += zero_count(h)
@@ -173,7 +181,10 @@ class GraphSAGEWithFS(GNNBase):
                                 # 统计信息传输量
                         before = h.shape
                         h = self.dropout(h)
+                        start = time()
                         h = self.layers[i](g, h, in_deg)
+                        end = time()
+                        self.normal_run_time += end - start
                         after = h.shape
                         # non-linear layer torch.Size([10934, 500]) torch.Size([10013, 64])
                         # non-linear layer torch.Size([10562, 500]) torch.Size([9704, 64])
@@ -238,7 +249,10 @@ class GraphSAGEWithFS(GNNBase):
                             # 统计信息传输量
                     before = h.shape
                     h = self.dropout(h)
+                    start = time()
                     h = self.layers[i](g, h, in_deg)
+                    end = time()
+                    self.normal_run_time += end - start
                     after = h.shape
                     # non-linear layer torch.Size([10934, 500]) torch.Size([10013, 64])
                     # non-linear layer torch.Size([10562, 500]) torch.Size([9704, 64])
