@@ -257,7 +257,10 @@ def create_model(layer_size,mu, args):
 def reduce_hook(param, name, args, optimizer:torch.optim.Optimizer):
     def fn(grad):
         # OPT3
-        epoch = optimizer.state['step']
+        epoch = optimizer.state['step']['epoch']
+        rank = dist.get_rank()
+        if rank == 0:
+            print(f"epoch: {epoch}, name: {name}, time: {time.time()}")
         # print("epoch",name,epoch)
         # epoch layers.3.linear2.bias 98
         # epoch layers.3.linear2.weight 98
@@ -361,13 +364,26 @@ def run(graph, node_dict, gpb, queue, args):
     boundary = get_boundary(node_dict, gpb)
 
     layer_size = get_layer_size(args.n_feat, args.n_hidden, args.n_class, args.n_layers)
-    # [500, 64, 16, 3]
     # [n_feat, n_hidden ...(n_layers-1), n_class]
-    layer_size = [args.n_feat, 64, 16, args.n_class]
+    if args.dataset == "pubmed":
+        layer_size = [args.n_feat, 64, 16, args.n_class]
+        # [500, 64, 16, 3]
+    elif args.dataset == "cora":
+        layer_size = [args.n_feat, 512, 64, args.n_class]
+        # [1433, 512, 64, 7]
+    elif args.dataset == "reddit":
+        layer_size = [args.n_feat, 256, 256, 64, args.n_class]
+        # [602, 256, 256, 64, 41]
+    elif args.dataset == "ogbn-products":
+        layer_size = [args.n_feat, 128, 64, args.n_class]
+        # [100, 128, 64, 47]
+    else:
+        raise NotImplementedError
+    
     if args.fs:
         # [500, 500, 64, 16, 3]
         # [n_feat, fs(n_feat), n_hidden ...(n_layers-1), n_class]
-        layer_size.insert(0,layer_size[0])
+        layer_size.insert(0, layer_size[0])
     print(f"layer_size: {layer_size}")
 
     pos = get_pos(node_dict, gpb)
@@ -383,7 +399,7 @@ def run(graph, node_dict, gpb, queue, args):
     # 对于第i个分量，如果i==rank，那么该分量为None
     # 否则，该分量为第i个进程与当前进程的边界节点数，也就是待传输节点数
     recv_shape = get_recv_shape(node_dict)
-    print(f"get_recv_shape {recv_shape}")
+    print(f"[{rank}] get_recv_shape {recv_shape}")
 
     ctx.buffer.init_buffer(        
         num_in=num_in,
@@ -453,9 +469,7 @@ def run(graph, node_dict, gpb, queue, args):
     # register the hook for gradient reducing on cpu
     # the hook will be called after the local gradient is computed
     for i, (name, param) in enumerate(model.named_parameters()):
-        # OPT3: fs参数不需要聚合
-        if name.endswith("mu"):
-            continue
+        print(name)
         # param.register_hook(reduce_hook(param, name, args.n_train))
         param.register_hook(reduce_hook(param, name, args, optimizer))
         
@@ -501,13 +515,18 @@ def run(graph, node_dict, gpb, queue, args):
         node_dict.pop('val_mask')
         node_dict.pop('test_mask')
 
-    writer = get_writer("dist", "gpu", "fs" if args.fs else "no fs", f"dataset={args.dataset}", f"layer={layer_size} lr={args.lr}", f"partition {args.n_partitions}", now_str())
+    writer = get_writer("dist", "gpu", "fs" if args.fs else "no fs", f"dataset={args.dataset}", f"layer={layer_size} lr={args.lr} period={args.log_every}", f"partition {args.n_partitions}", now_str())
 
+    optimizer.state['step'] = {
+        "epoch":0,
+    }
+    backward_time = 0
     for epoch in range(args.n_epochs):
         print(f"[{rank}] epoch:{epoch}")
 
         # OPT3: update the step in optimizer
-        optimizer.state['step'] = epoch
+        optimizer.state['step']["epoch"] = epoch
+        
         update_flag = get_update_flag(epoch, args)
             
         t0 = time.time()
@@ -550,7 +569,10 @@ def run(graph, node_dict, gpb, queue, args):
         optimizer.zero_grad(set_to_none=True)
         # OPT3: calculate the gradients but aggregate the gradients periodically by reduce_hook and optimizer.state['step']
         # reduce_hook will aggregate the gradients of the same parameter on different processes
+        start = time.time()
         loss.backward()
+        end = time.time()
+        backward_time += end - start
         # 这里实际上是在等待同步完成
         # 需要更新时才会统计时间
         if update_flag:
@@ -653,6 +675,11 @@ def run(graph, node_dict, gpb, queue, args):
         # writer的thread_lock不可序列化，所以不能将writer放在字典中
         # 然后通过队列传给主进程
         ret['writer_path'] = writer.log_dir
+        ret['fs_run_time'] = model.fs_run_time
+        ret['normal_run_time'] = model.normal_run_time
+        print("fs_run_time", model.fs_run_time)
+        print("normal_run_time", model.normal_run_time)
+        print("backward_time", backward_time)
         writer.close()
         
     # 当前进程传输embedding的通信量
