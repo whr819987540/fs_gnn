@@ -1,3 +1,7 @@
+import torch
+from torch import nn
+import math
+
 class GraphSageConvolution(nn.Module):
     def __init__(self, n_in, n_out, bias=True):
         super(GraphSageConvolution, self).__init__()

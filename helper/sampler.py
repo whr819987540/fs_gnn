@@ -1,6 +1,7 @@
 import torch
 import scipy.sparse as sp
 from torch.utils.data import Dataset, DataLoader
+import numpy as np
 
 class MyDataset(Dataset):
     def __init__(self, data):
