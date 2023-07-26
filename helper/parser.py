@@ -25,6 +25,8 @@ def create_parser():
                         help="the number of GCN layers")
     parser.add_argument("--n-linear", "--n_linear", type=int, default=0,
                         help="the number of linear layers")
+    parser.add_argument("--batch-size", "--batch_size", type=int, default=16,
+                        help="the size of a batch, namely the number of nodes in the last layer output")
     parser.add_argument("--norm", choices=['layer', 'batch'], default='layer',
                         help="normalization method")
     parser.add_argument("--weight-decay", "--weight_decay", type=float, default=0,
