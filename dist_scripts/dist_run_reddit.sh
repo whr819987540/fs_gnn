@@ -1,0 +1,14 @@
+python dist_main.py \
+--model gcn \
+--dataset reddit \
+--n_partitions 4 \
+--lr 1e-4 \
+--dropout 0.1 \
+--sigma 1.0 \
+--n-layers 4 \
+--port 18119 \
+--log-every 1 \
+--n-epochs 500 \
+--eval \
+--fix_seed \
+--fs
