@@ -14,12 +14,6 @@ class MyDataset(Dataset):
         sample = self.data[idx]
         return sample
 
-dataset = MyDataset(data)   #data是worker i上的训练集节点id
-
-batch_size = 128
-#生成批处理数据batch
-dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-
 def normalize(adj):
     """Normalization by D^{-1/2} (A+I) D^{-1/2}."""
     rowsum = np.array(adj.sum(1)) + 1e-20
@@ -50,15 +44,13 @@ def sparse_mx_to_torch_sparse_tensor(sparse_mx):
     return indices, values, shape
 
 #采样函数
-def sampler(seed:int, A, previous_nodes:list, sample_num:int):
+def sampler(A, previous_nodes:list, sample_num:int):
     '''
-    seed: 随机种子，为了使每一层采样产生的随机数不一样，每次用np.random.randint(2**10 - 1)产生一个随机数作为seed传入
-    A:不是tensor，A是由sp.coo_matrix生成的稀疏矩阵，所有待选邻居节点（一个节点的所有邻居节点是包括它自己本身的）的邻接矩阵，
-    行列数一样，对角线上都是1，即自己和自己连接
-    previous_nodes: 上一层的节点在矩阵A中的ID，而不是原ID，要求以在A中的ID从小到大的顺序排列
-    sample_num:每个节点采样的邻居节点数，超参数，这里设置为5
+    A:torch.Tesor, 所有待选邻居节点（一个节点的所有邻居节点是包括它自己本身的）的邻接矩阵,
+    行列数一样,对角线上都是1,即自己和自己连接
+    previous_nodes: 上一层的节点在矩阵A中的index,而不是global id, 要求以在A中的ID从小到大的顺序排列
+    sample_num:每层节点采样的最大值
     '''
-    np.random.seed(seed)
     U = A[previous_nodes,:]
     after_nodes = []
     for U_row in U:
@@ -72,10 +64,18 @@ def sampler(seed:int, A, previous_nodes:list, sample_num:int):
     adj = normalize(adj)
     adj = adj[previous_nodes, :]
     #adj = row_normalize(adj)
-    adj = sparse_mx_to_torch_sparse_tensor(adj) #将adj转换为sparse tensor类型，可以直接用于训练
+    adj = sparse_mx_to_torch_sparse_tensor(adj) #将adj转换为sparse tensor类型,可以直接用于训练
 
     previous_index = np.where(np.isin(after_nodes, previous_nodes))[0]
 
-    # 返回的adj用于前向传播中，after_nodes用于下一层采样，list，对应A中的ID，不是原ID
-    # previous_index是previous_nodes在after_nodes中的索引，后面训练时要用
+    # 返回的adj用于前向传播中,after_nodes用于下一层采样,list,对应A中的ID,不是原ID
+    # previous_index是previous_nodes在after_nodes中的索引,后面训练时要用
     return adj, after_nodes, previous_index
+
+if __name__ == "__main__":
+    data = None
+    dataset = MyDataset(data)   #data是worker i上的训练集节点id
+
+    batch_size = 128
+    #生成批处理数据batch
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
