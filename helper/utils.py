@@ -106,6 +106,61 @@ def load_data(dataset):
 
 
 def load_partition(args, rank):
+    # node_dict
+    # _ID: node id of inner nodes and boundary nodes in the whole graph
+    #       all subgraphs use the same namespace
+    # part_id: the partition that an inner node or a boundary node belongs to, range from 0 to n_partitions-1
+    # inner_node: whether a node is an inner node, True for inner node, False for boundary node
+
+    # Process 1 has 7763 nodes, 36969 edges ,6591 inner nodes, and 31833 inner edges.
+    # '_ID':
+    # tensor([ 6746,  6747,  6748,  ..., 16110,  1499, 13539], device='cuda:0')
+    # node_dict['_ID'].shape
+    # torch.Size([7763])
+    
+    # 'part_id':
+    # tensor([1, 1, 1,  ..., 2, 0, 2], device='cuda:0')
+    # node_dict['part_id'].shape
+    # torch.Size([7763])
+    # set(node_dict['part_id'].tolist())
+    # {0, 1, 2}
+    
+    # 'inner_node':
+    # tensor([ True,  True,  True,  ..., False, False, False], device='cuda:0')
+    # node_dict['inner_node'].shape
+    # torch.Size([7763])
+    
+    # 'label':
+    # tensor([1, 1, 1,  ..., 1, 0, 1], device='cuda:0')
+    # node_dict['label'].shape
+    # torch.Size([6591])
+    
+    # 'feat':
+    # tensor([[0.0000, 0.0000, 0.0000,  ..., 0.0000, 0.0000, 0.0000],
+    #         [0.0000, 0.0000, 0.0000,  ..., 0.0000, 0.0000, 0.0000],
+    #         [0.0000, 0.0000, 0.0000,  ..., 0.0000, 0.0000, 0.0000],
+    #         ...,
+    #         [0.0000, 0.0164, 0.0067,  ..., 0.0000, 0.0000, 0.0000],
+    #         [0.1651, 0.0000, 0.0000,  ..., 0.0000, 0.0000, 0.0000],
+    #         [0.0000, 0.0361, 0.0000,  ..., 0.0000, 0.0000, 0.1022]],
+    #        device='cuda:0')
+    # node_dict['feat'].shape
+    # torch.Size([6591, 500])
+    
+    # 'in_degree':
+    # tensor([ 2, 22,  2,  ..., 31,  2,  2], device='cuda:0')
+    # node_dict['in_degree'].shape
+    # torch.Size([6591])
+
+    # 'train_mask':
+    # tensor([False, False, False,  ..., False, False, False], device='cuda:0')
+    # 'val_mask':
+    # tensor([False, False, False,  ..., False, False, False], device='cuda:0')
+    # 'test_mask':
+    # tensor([False, False, False,  ..., False, False, False], device='cuda:0')
+    # node_dict['train_mask'].shape
+    # torch.Size([6591])
+
     print(f'[{rank}] loading partition')
 
     # graph_dir = 'partitions/' + args.graph_name + '/'
