@@ -1,7 +1,7 @@
 import torch
 from torch import nn
-from new_layer_1 import FSLayer
-from helper.graphsage_layer import GraphSageConvolution
+from fs_layer import FSLayer
+from module.graphsage_layer import GraphSageConvolution
 
 # 第二种全程online的方式，这种方式下是一定要加FS层的，在训练模型之前做节点采样
 class GCN_second(nn.Module):

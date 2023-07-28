@@ -53,7 +53,7 @@ def sparse_mx_to_torch_sparse_tensor(sparse_mx):
 def sampler(seed:int, A, previous_nodes:list, sample_num:int):
     '''
     seed: 随机种子，为了使每一层采样产生的随机数不一样，每次用np.random.randint(2**10 - 1)产生一个随机数作为seed传入
-    A:不是tensor，是用A是由sp.coo_matrix生成的稀疏矩阵，所有待选邻居节点（一个节点的所有邻居节点是包括它自己本身的）的邻接矩阵，
+    A:不是tensor，A是由sp.coo_matrix生成的稀疏矩阵，所有待选邻居节点（一个节点的所有邻居节点是包括它自己本身的）的邻接矩阵，
     行列数一样，对角线上都是1，即自己和自己连接
     previous_nodes: 上一层的节点在矩阵A中的ID，而不是原ID，要求以在A中的ID从小到大的顺序排列
     sample_num:每个节点采样的邻居节点数，超参数，这里设置为5

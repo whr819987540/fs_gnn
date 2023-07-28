@@ -1,7 +1,7 @@
 import torch
 from torch import nn
-from new_layer_1 import FSLayer
-from helper.graphsage_layer import GraphSageConvolution
+from fs_layer import FSLayer
+from module.graphsage_layer import GraphSageConvolution
 
 class GCN_first(nn.Module):
     def __init__(self, nfeat, nhid, num_classes, layers, dropout, weights:torch.Tensor,
