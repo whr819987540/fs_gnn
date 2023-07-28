@@ -27,6 +27,8 @@ def create_parser():
                         help="the number of linear layers")
     parser.add_argument("--batch-size", "--batch_size", type=int, default=16,
                         help="the size of a batch, namely the number of nodes in the last layer output")
+    parser.add_argument("--sample-num", "--sample_num", type=int, default=512,
+                        help="the number of sampled nodes for each layer, namely the number of nodes of each layer input, except for the fs layer")
     parser.add_argument("--norm", choices=['layer', 'batch'], default='layer',
                         help="normalization method")
     parser.add_argument("--weight-decay", "--weight_decay", type=float, default=0,
