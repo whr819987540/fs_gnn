@@ -14,14 +14,16 @@ class MyDataset(Dataset):
         sample = self.data[idx]
         return sample
 
+'''
 def normalize(adj):
     """Normalization by D^{-1/2} (A+I) D^{-1/2}."""
-    rowsum = np.array(adj.sum(1)) + 1e-20
-    d_inv_sqrt = np.power(rowsum, -0.5).flatten()
-    d_inv_sqrt[np.isinf(d_inv_sqrt)] = 0.
-    d_mat_inv_sqrt = sp.diags(d_inv_sqrt, 0)
-    adj = adj.dot(d_mat_inv_sqrt).transpose().dot(d_mat_inv_sqrt)
+    rowsum = adj.sum(dim=1) + 1e-20
+    d_inv_sqrt = torch.pow(rowsum, -0.5).flatten()
+    d_inv_sqrt[d_inv_sqrt == float('inf')] = 0.
+    d_mat_inv_sqrt = torch.diag(d_inv_sqrt).to(adj.dtype)
+    adj = adj.mm(d_mat_inv_sqrt).t().mm(d_mat_inv_sqrt)
     return adj
+
 
 def row_normalize(adj):
     """Row-normalize sparse matrix"""
@@ -45,12 +47,12 @@ def sparse_mx_to_torch_sparse_tensor(sparse_mx):
 
 #采样函数
 def sampler(A, previous_nodes:list, sample_num:int):
-    '''
+    """
     A:torch.Tesor, 所有待选邻居节点（一个节点的所有邻居节点是包括它自己本身的）的邻接矩阵,
     行列数一样,对角线上都是1,即自己和自己连接
     previous_nodes: 上一层的节点在矩阵A中的index,而不是global id, 要求以在A中的ID从小到大的顺序排列
     sample_num:每层节点采样的最大值
-    '''
+    """
     U = A[previous_nodes,:]
     after_nodes = []
     for U_row in U:
@@ -71,6 +73,31 @@ def sampler(A, previous_nodes:list, sample_num:int):
     # 返回的adj用于前向传播中,after_nodes用于下一层采样,list,对应A中的ID,不是原ID
     # previous_index是previous_nodes在after_nodes中的索引,后面训练时要用
     return adj, after_nodes, previous_index
+'''
+
+def row_normalize(tensor):
+    row_sum = tensor.sum(dim=1, keepdim=True)
+    normalized_tensor = tensor / row_sum
+    return normalized_tensor
+
+# 层采样
+def layer_wise_sampler(A, previous_nodes:list, sample_num:int):
+    '''
+    A:torch.Tesor, 所有待选邻居节点（一个节点的所有邻居节点是包括它自己本身的）的邻接矩阵,
+    行列数一样,对角线上都是1,即自己和自己连接
+    previous_nodes: 上一层的节点在矩阵A中的index,而不是global id, 要求以在A中的ID从小到大的顺序排列
+    sample_num:每层节点采样的最大值
+    '''
+    s_num = min(A.shape[0], sample_num)
+    sampled_nodes = torch.randperm(A.shape[0])[:s_num].sort().values
+    adj = A[previous_nodes, :][:, sampled_nodes]
+    adj = row_normalize(adj)
+
+    # previous_index = torch.where(torch.isin(sampled_nodes, torch.tensor(previous_nodes)))[0]
+
+    # 返回的adj用于前向传播中,tensor.
+    # sampled_nodes用于下一层采样,list,对应A中的ID,不是global ID
+    return adj, sampled_nodes.tolist()
 
 if __name__ == "__main__":
     data = None
