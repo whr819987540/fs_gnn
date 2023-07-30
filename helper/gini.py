@@ -9,7 +9,7 @@ def gini_impurity(labels):
 # 计算连续型变量的gini分数
 def continous_feature_importance_gini(X:torch.Tensor, y:torch.Tensor):
     '''
-    在没有经过划分的原图上计算，X是特征矩阵，y是label矩阵
+    在没有经过划分的原图的train上计算，X是特征矩阵，y是label矩阵
     '''
     n_samples = X.shape[0]
     n_features = X.shape[1]
