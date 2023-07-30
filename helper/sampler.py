@@ -58,6 +58,7 @@ def sampler(A, previous_nodes:list, sample_num:int):
         sampled_indices = np.random.choice(indices, sample_num, replace=True)
         after_nodes.append(sampled_indices)
     after_nodes = np.unique(np.concatenate(after_nodes))
+    # previous_nodes一定在after_nodes中
     after_nodes = np.concatenate([previous_nodes, np.setdiff1d(after_nodes, previous_nodes)])
     after_nodes = np.sort(after_nodes)
     adj = A[after_nodes, :][:, after_nodes]
