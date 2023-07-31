@@ -73,9 +73,13 @@ def create_parser():
                         help="disable evaluation")
     parser.add_argument('--fs', action='store_true',
                         help="add fs layer")
-    parser.add_argument('--no-fs', action='store_false', dest='eval',
+    parser.add_argument('--no-fs', action='store_false', dest='fs',
                         help="don't add fs layer")
-    
+    parser.add_argument('--pretrain', action='store_true',
+                        help="use pretrain mode")
+    parser.add_argument('--no-pretrain', action='store_false', dest='pretrain',
+                        help="don't use pretrain mode")
+
     parser.set_defaults(eval=True)
 
     return parser.parse_args()
