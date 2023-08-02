@@ -16,11 +16,11 @@ def init_processes(rank,size):
 def run(rank,size):
     rank, size = dist.get_rank(), dist.get_world_size()
     # 定义需要通信的数据
-    tensor = torch.tensor([rank+1],dtype=torch.int)
+    tensor = torch.tensor([rank+1],dtype=torch.int).cuda()
     tensor = torch.square(tensor)
     # received_tensor = torch.tensor([rank,100])
     # 待接收的数据与接收数据的tensor的类型必须一致
-    received_tensor = torch.zeros(1,dtype=torch.int)
+    received_tensor = torch.zeros(1,dtype=torch.int).cuda()
     print(tensor,received_tensor)
     
     if rank == 0:
