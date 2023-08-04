@@ -78,12 +78,12 @@ class GCN_first(nn.Module):
         self.fs_run_time = 0 # fs层的运行时间
         self.normal_run_time = 0 # 非fs层的运行时间
 
-        self.gcs = nn.ModuleList()
-
+        self.fs_layer = None
         if self.fs:
-            self.gcs.append(FSLayer(layer_size[0], weights, random_init_fs, pretrain))
+            self.fs_layer = FSLayer(layer_size[0], weights, random_init_fs, pretrain)
             layer_size.pop(0)
-            
+
+        self.gcs = nn.ModuleList()
         for i in range(len(layer_size) - 2):
             self.gcs.append(GraphConvolution(layer_size[i], layer_size[i+1]))
             
@@ -97,7 +97,7 @@ class GCN_first(nn.Module):
             获取fs层的参数
         """
         if self.fs:
-            return self.gcs[0].weights
+            return self.fs_layer.weights
         else:
             return None
 
@@ -109,33 +109,23 @@ class GCN_first(nn.Module):
         if self.fs:
             torch.cuda.synchronize()
             start = time()
-            x = self.gcs[0](x) # fs层
+            x = self.fs_layer(x) # fs层
             x = self.dropout(x)
             torch.cuda.synchronize()
             end = time()
             self.fs_run_time += end - start
 
-            torch.cuda.synchronize()
-            start = time()
-            for ell in range(1,len(self.gcs)):
-                x = self.gcs[ell](x, adjs[ell])
-                x = self.relu(x)
-                x = self.dropout(x)
-            x = self.gc_out(x)
-            torch.cuda.synchronize()
-            end = time()
-            self.normal_run_time += end - start
-        else:
-            torch.cuda.synchronize()
-            start = time()
-            for ell in range(len(self.gcs)):
-                x = self.gcs[ell](x, adjs[ell])
-                x = self.relu(x)
-                x = self.dropout(x)
-            x = self.gc_out(x)
-            torch.cuda.synchronize()
-            end = time()
-            self.normal_run_time += end - start
+        torch.cuda.synchronize()
+        start = time()
+        for ell in range(len(self.gcs)):
+            x = self.gcs[ell](x, adjs[ell])
+            x = self.relu(x)
+            x = self.dropout(x)
+        x = self.gc_out(x)
+        torch.cuda.synchronize()
+        end = time()
+        self.normal_run_time += end - start
+
         return x
 
 # 根据预训练结果选择offline模式下的特征
