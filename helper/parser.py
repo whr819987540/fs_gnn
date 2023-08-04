@@ -79,6 +79,7 @@ def create_parser():
                         help="use pretrain mode")
     parser.add_argument('--no-pretrain', action='store_false', dest='pretrain',
                         help="don't use pretrain mode")
+    parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], default='DEBUG')
 
     parser.set_defaults(eval=True)
 
