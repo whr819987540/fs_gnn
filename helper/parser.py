@@ -80,7 +80,7 @@ def create_parser():
     parser.add_argument('--no-pretrain', action='store_false', dest='pretrain',
                         help="don't use pretrain mode")
     parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], default='DEBUG')
-
+    parser.add_argument("--fsratio", "--fsratio", type=float, default=0.5,help="the ratio of selected features of fs layer")
     parser.set_defaults(eval=True)
 
     return parser.parse_args()
