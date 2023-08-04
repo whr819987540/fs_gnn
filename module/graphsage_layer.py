@@ -1,6 +1,8 @@
 import torch
 from torch import nn
 import math
+import logging
+from torch import distributed as dist
 
 class GraphSageConvolution(nn.Module):
     def __init__(self, n_in, n_out, bias=True):
@@ -30,10 +32,13 @@ class GraphConvolution(nn.Module):
         self.n_out = n_out
         self.linear = nn.Linear(n_in, n_out)
         self.reset_parameters()
+        self.logger = logging.getLogger(f'[{dist.get_rank()}]')
 
     def forward(self, x: torch.Tensor, adj: torch.Tensor):
         # torch.spmm(sparse/dense, dense)
+        shape = x.shape
         x = self.linear(x)
+        self.logger.debug(f'{shape} {x.shape} {adj.shape}')
         x = torch.spmm(adj, x)
         return x
 
