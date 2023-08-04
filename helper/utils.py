@@ -1,20 +1,24 @@
+import json
+import logging
 import os
-
-import scipy
-import torch
-import dgl
-from dgl.data import RedditDataset, PubmedGraphDataset, CoraGraphDataset
-from dgl.distributed import partition_graph
-import torch.distributed as dist
 import time
 from contextlib import contextmanager
-from ogb.nodeproppred import DglNodePropPredDataset
-import json
+from datetime import datetime
+from os.path import join
+from threading import Thread
+from typing import List
+
+import dgl
 import numpy as np
+import scipy
+import torch
+import torch.distributed as dist
+from dgl.data import CoraGraphDataset, PubmedGraphDataset, RedditDataset
+from dgl.distributed import partition_graph
+from ogb.nodeproppred import DglNodePropPredDataset
 from sklearn.preprocessing import StandardScaler
 from torch.utils.tensorboard import SummaryWriter
-from os.path import join
-from datetime import datetime
+from helper import sampler
 
 
 def load_ogb_dataset(name):
@@ -161,7 +165,8 @@ def load_partition(args, rank):
     # node_dict['train_mask'].shape
     # torch.Size([6591])
 
-    print(f'[{rank}] loading partition')
+    logger = logging.getLogger(f'[{rank}]')
+    logger.info(f'loading partition')
 
     # graph_dir = 'partitions/' + args.graph_name + '/'
     # part_config = graph_dir + args.graph_name + '.json'
@@ -352,3 +357,397 @@ def matrix_to_sparse_matrix(matrix:torch.Tensor)->torch.Tensor:
 
 def sparse_matrix_transfer_bytes(matrix:torch.Tensor)->int:
     return matrix.indices().numel() * matrix.indices().element_size() + matrix.values().numel() * matrix.values().element_size()
+
+
+def get_sampled_batch_from_inner_nodes(inner_nodes, train_mask, args):
+    # batch首先属于inner node，然后还属于训练集    
+    batch_loader = sampler.DataLoader(
+        dataset = sampler.MyDataset(inner_nodes[train_mask]),
+        batch_size=args.batch_size, 
+        shuffle=True
+    )
+    
+    return next(iter(batch_loader))
+
+def get_adj_matrix_from_graph(g):
+    """
+        get adjecent matrix(sparse) from graph, including inner nodes and boundary nodes
+    """
+    # <class 'dgl.sparse.sparse_matrix.SparseMatrix'>
+    adj = g.adjacency_matrix() 
+    # adj_tensor.shape
+    # torch.Size([7763, 7763])
+    adj_tensor = torch.sparse_coo_tensor(
+            indices=adj.indices(),
+            values=adj.val,
+            size=adj.shape
+        )
+    return adj_tensor
+
+
+def get_all_partition_detail_and_globalid_index_mapper_manager(num_nodes:int, size:int, args):
+    """
+        1) get partition id or rank by global_id as the list's index
+        2) get globalid by index of the matrix on certain rank, or get index of the matrix on certain rank by globalid 
+    """
+    # 建立node globalid到partition id的映射
+    all_partition_detail = [None]*num_nodes
+    # 建立globalid到index的映射
+    mapper_manager = GlobalidIndexMapperManager()
+
+    for rank in range(size):
+        g, node_dict, gpb = load_partition(args, rank)
+        mapper = GlobalidIndexMapper(node_dict['_ID'])
+        mapper_manager.add_mapper(mapper, rank)
+        # node_dict['_ID']
+        # tensor([    0,     1,     2,  ..., 12856, 18956, 11570])
+        # mapper.globalid_to_index(torch.tensor([12856,0]))
+        # tensor([10931,     0])
+        # node_dict['_ID'].shape
+        # torch.Size([10934])
+    
+        for i,j in zip(node_dict['_ID'], node_dict['part_id']):
+            all_partition_detail[i.item()] = j.item()
+
+    return all_partition_detail, mapper_manager
+
+
+class GlobalidIndexMapper:
+    """
+        node_dict['_ID'] is the global id of nodes in the whole graph
+        index in the adjecent matrix is only the index
+        this class is used to map both of them
+    """
+    def __init__(self,globalid:torch.Tensor):
+        self.globalid = globalid
+        
+    def globalid_to_index(self,globalid:torch.Tensor)->torch.Tensor:
+        # torch.tensor([9534,1275])[:,None]
+        # torch([[9534],
+            # [1275]])    
+        # torch.where(torch.tensor([9534,1275])[:,None]==mapper.globalid)
+        # (tensor([0, 1]), tensor([10560, 10561]))
+        return torch.where(globalid[:,None]==self.globalid)[1]
+
+
+    def index_to_globalid(self,index:torch.Tensor)->torch.Tensor:
+        return self.globalid[index]
+
+class GlobalidIndexMapperManager:
+    """
+        管理不同worker上globalid与邻接矩阵 index的映射
+    """
+    def __init__(self) -> None:
+        self.manager = dict()
+
+    def add_mapper(self,mapper:GlobalidIndexMapper,rank:int):
+        self.manager[rank] = mapper
+
+    def __getitem__(self,rank:int)->GlobalidIndexMapper:
+        return self.manager[rank]
+
+class Swapper:
+    # 需要传输的内容：
+    # 1）初始化的模型参数
+    # 2）每轮训练的梯度
+    # 3）feature、adj_line
+    RequesetTag = 1
+    ResponseTag = 2
+    AdjLineTag = 1
+    FeatureTag = 2
+    
+    def __init__(self, features, adj_matrix, sample_num,mapper_manager:GlobalidIndexMapperManager,globalid_index_mapper_in_feature:GlobalidIndexMapper,index_type:torch.dtype,matrix_value_type:torch.dtype,feature_value_type:torch.dtype,all_feat:torch.Tensor=None) -> None:
+        self.rank = dist.get_rank()
+        self.sample_num = sample_num # 某层采样节点数的最大值
+
+        self.logger = logging.getLogger(f'[{self.rank}]')
+
+        self.adj_matrix = adj_matrix
+        self.features = features
+        self.all_feat = all_feat # 弃用
+        
+        self.mapper_manager = mapper_manager
+        self.globalid_index_mapper = mapper_manager[self.rank]
+        # 用于将globalid转换为feature矩阵中的index
+        self.globalid_index_mapper_in_feature = globalid_index_mapper_in_feature
+
+        self.index_type = index_type
+        self.matrix_value_type = matrix_value_type
+        self.feature_value_type = feature_value_type
+        
+    def start_listening(self):
+        t1 = Thread(target=self.adjline_listener)
+        t1.start()
+
+        t2 = Thread(target=self.feature_listener)
+        t2.start()
+
+        # t = Thread(target=self.listener)
+        # t.start()
+
+        
+    def listener(self):
+        while True:
+            # global id(no -1 in it)
+            nodes = torch.tensor([-1]*(self.sample_num+1),dtype=self.index_type)
+            # recv from all ranks
+            try:
+                work = dist.recv(nodes)
+            except Exception as e:
+                self.logger.error(f"listener recv exception {e}",stack_info=True)
+                
+            tag = nodes[0].item()
+            nodes = nodes[1:]
+            nodes = nodes[nodes!=-1]
+
+            self.logger.debug(f"tag {tag}")
+            # adj line
+            if tag == self.AdjLineTag:
+                self.logger.debug(f"recv adj line nodes, {nodes} {nodes.shape}")
+                try:
+                    # global id
+                    # index
+                    nodes = self.globalid_index_mapper.globalid_to_index(nodes)
+                    # send adj line to certain rank
+                    dist.send(self.adj_matrix[nodes,:],dst=work,tag=self.AdjLineTag)
+                    self.logger.debug(f"send adj lines, {nodes} {nodes.shape}")
+                except Exception as e:
+                    self.logger.error(f"listener send adjline exception {e}",stack_info=True)
+            # feature
+            else:
+                self.logger.debug(f"recv feature nodes, {nodes} {nodes.shape}")
+                try:
+                    # index
+                    nodes_index = self.globalid_index_mapper_in_feature.globalid_to_index(nodes.cuda())
+                    # send features to certain rank
+                    dist.send(self.features[nodes_index,:].cpu(),dst=work,tag=self.FeatureTag)
+                    self.logger.debug(f"feature send, nodes_index {nodes_index} {nodes_index.shape}")
+                except Exception as e:
+                    self.logger.error(f"listener send feature exception {e}",stack_info=True)
+                
+    def adjline_listener(self):
+        # 负责接收请求并放入请求队列中
+        while True:
+            # global id(no -1 in it)
+            # cpu
+            nodes = torch.tensor(
+                data=[-1]*(self.sample_num+1),
+                dtype=self.index_type
+            )
+            
+            # recv from all ranks
+            try:
+                work = dist.recv(
+                    nodes,
+                    tag=int(f"{self.RequesetTag}{self.AdjLineTag}")
+                )
+            except Exception as e:
+                self.logger.error(f"adjline_listener recv request exception {e}",stack_info=True)
+            else:
+                tag = nodes[0].item()
+                # global id
+                nodes = nodes[1:]
+                nodes = nodes[nodes!=-1]
+
+                self.logger.debug(f"tag {tag}")
+                self.logger.debug(f"adjline_listener recv request {nodes} {nodes.shape}")
+
+            try:
+                # index
+                nodes = self.globalid_index_mapper.globalid_to_index(nodes)
+                # send adj line to certain rank
+                dist.send(
+                    self.adj_matrix[nodes,:],
+                    dst=work,
+                    tag=int(f"{self.ResponseTag}{self.AdjLineTag}")
+                )
+            except Exception as e:
+                self.logger.error(f"adjline_listener send response exception {e}",stack_info=True)
+            else:
+                self.logger.debug(f"adjline_listener send response {self.adj_matrix[nodes,:].shape} ")
+            
+
+    def get_adj_line_from_worker(self, rank, nodes:torch.Tensor):
+        """
+            向指定的worker寻找邻接矩阵中nodes所在行.
+
+            由于邻接矩阵取决于子图, 因此邻接矩阵是固定不变的.
+            由于通信是将CPU的数据转移到内核, 因此需要将邻接矩阵从GPU转移到CPU, 避免频繁的GPU-CPU通信.         
+            采用点对点通信
+
+            这个函数只是交换固定的数据, 访问数据时数据一定是ready的, 因此没必要做异步.
+            用了多线程也为了提高网络IO效率.
+            
+            返回:
+            adj_line
+            rank: worker id
+            node: List[int] global id
+        """
+        # 接收方需要知道nodes的数量
+        tmp = torch.cat([
+            torch.tensor(
+                data=[int(f"{self.RequesetTag}{self.AdjLineTag}")],
+                dtype=nodes.dtype,
+                device=nodes.device
+            ),
+            nodes,
+        ])
+        
+        try:
+            dist.send(
+                tmp, 
+                dst=rank, 
+                tag=int(f"{self.RequesetTag}{self.AdjLineTag}")
+            )
+        except Exception as e:
+            self.logger.exception(f"get_adj_line_from_worker send request exception {e}",stack_info=True)
+        else:
+            self.logger.debug(f"get_adj_line_from_worker send request, {nodes} {nodes.shape}")
+
+        # 接收方需要知道adj_line的形状，行是nodes的个数，列是rank中inner_nodes和boundary_nodes的个数，即globalid的个数
+        try:
+            adj_lines = torch.zeros(
+                size=(len(nodes), self.mapper_manager[rank].globalid.shape[0]), 
+                dtype=self.matrix_value_type
+            )
+            dist.recv(
+                adj_lines, 
+                src=rank, 
+                tag=int(f"{self.ResponseTag}{self.AdjLineTag}")
+            )
+        except Exception as e:
+            self.logger.error(f"get_adj_line_from_worker recv response exception {e}",stack_info=True)
+        else:
+            self.logger.debug(f"get_adj_line_from_worker recv response {adj_lines.shape} ")
+
+        tmp = []
+        for i in range(len(nodes)):
+            tmp.append({
+                "node":nodes[i],
+                "adj_line":adj_lines[i,:].unsqueeze(0),
+                "rank":rank,
+            })
+        return tmp
+
+    def feature_listener(self):
+        # 负责接收请求并放入请求队列中
+        while True:
+            # global id(no -1 in it)
+            # cpu
+            nodes = torch.tensor(
+                [-1]*(self.sample_num+1),
+                dtype=self.index_type
+            )
+            
+            # recv from all ranks
+            try:
+                work = dist.recv(
+                    nodes,
+                    tag=int(f"{self.RequesetTag}{self.FeatureTag}")
+                )
+            except Exception as e:
+                self.logger.error(f"feature_listener recv request exception {e}",stack_info=True)
+            else:
+                tag = nodes[0].item()
+                # global id
+                nodes = nodes[1:]
+                nodes = nodes[nodes!=-1]
+                
+                self.logger.debug(f"tag {tag}")
+                self.logger.debug(f"feature_listener recv request {nodes} {nodes.shape}")
+
+            try:
+                # index
+                nodes = self.globalid_index_mapper_in_feature.globalid_to_index(nodes.cuda())
+                # send features to certain rank
+                dist.send(
+                    self.features[nodes,:].cpu(),
+                    dst=work,
+                    tag=int(f"{self.ResponseTag}{self.FeatureTag}")
+                )
+            except Exception as e:
+                self.logger.error(f"feature_listener send response exception {e}",stack_info=True)
+            else:
+                self.logger.debug(f"feature_listener send response {self.features[nodes,:].cpu().shape} ")
+
+    def get_feature_from_worker(self, rank, idx:torch.Tensor, nodes:torch.Tensor):
+        """
+            向指定的worker获取nodes的feature
+
+            由于邻接矩阵取决于子图, 因此邻接矩阵是固定不变的.
+            由于通信是将CPU的数据转移到内核, 因此需要将邻接矩阵从GPU转移到CPU, 避免频繁的GPU-CPU通信.         
+            采用点对点通信
+
+            这个函数只是交换固定的数据, 访问数据时数据一定是ready的, 因此没必要做异步.
+            用了多线程也为了提高网络IO效率.
+            
+            返回:
+            adj_line
+            rank: worker id
+            node: List[int] global id
+        """
+        # FIXME: 用本地获取的全图的all_feature来替代rank之间的通信
+        # DONE: feature通信bug已修复
+        if self.all_feat is not None:
+            return {
+                "feat":self.all_feat[nodes,:],
+                "idx":idx,
+            }
+
+        # 接收方需要知道nodes的数量
+        tmp = torch.cat([
+            torch.tensor(
+                data=[int(f"{self.RequesetTag}{self.FeatureTag}")],
+                dtype=nodes.dtype,
+                device=nodes.device
+            ),
+            nodes,
+        ])
+
+        try:
+            # 接收方需要知道nodes的数量
+            # self.logger.debug(f"before {self.rank} get feature from {rank}, {tmp}")
+            # dist.send(nodes.cpu(), dst=rank,tag=self.FeatureTag)
+            dist.send(
+                tmp, 
+                dst=rank, 
+                tag=int(f"{self.RequesetTag}{self.FeatureTag}")
+            )
+        except Exception as e:
+            self.logger.exception(f"get_feature_from_worker send request exception {e}",stack_info=True)
+        else:
+            self.logger.debug(f"get_feature_from_worker send request, {nodes} {nodes.shape}")
+            
+        try:
+            # 接收方需要知道adj_line的形状，行是nodes的个数，列是rank中inner_nodes和boundary_nodes的个数，即globalid的个数
+            features = torch.zeros(
+                size=(len(nodes), self.features.shape[1]),
+                dtype=self.feature_value_type
+            )
+            dist.recv(features, src=rank,tag=int(f"{self.ResponseTag}{self.FeatureTag}"))
+        except Exception as e:
+            self.logger.error(f"get_feature_from_worker recv response exception {e}",stack_info=True)
+        else:
+            self.logger.debug(f"get_feature_from_worker recv response {features} {features.shape} {features.dtype}")
+
+        return {
+            "idx":idx,
+            "feat":features.cuda(),
+        }
+
+
+def init_logging(args,log_id:str,rank=-1):
+    # 2023-08-02 19:23:44 [0] "/home/whr/fs_gnn/dist_gcn_train.py", line 844, DEBUG: torch.Size([512, 500])
+    # asctime: 时间戳，可指定格式
+    # name: logger的名字
+    # pathname: 调用日志输出函数的模块的完整路径名，可能没有
+    # lineno: 调用日志输出函数的语句所在的代码行(所在文件内的行号)
+    # levelname: 日志的最终等级(以字符串的形式显示)
+    # message: 用户输出的消息(传入logger的参数)
+    log_format = f'%(asctime)s %(name)s "%(pathname)s", line %(lineno)d, %(levelname)s: %(message)s\n'
+    choices = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
+    logging.basicConfig(
+        level=(choices.index(args.log_level)+1)*10, format=log_format, 
+        datefmt='%Y-%m-%d %H:%M:%S',
+        filename=f'results/{log_id}_{rank}.log'
+    )
