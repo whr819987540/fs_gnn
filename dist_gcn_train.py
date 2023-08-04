@@ -382,7 +382,6 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
     index_type = torch.int64
     matrix_value_type = torch.int32
 
-
     rank, size = dist.get_rank(), dist.get_world_size()
 
     logger = logging.getLogger(f"[{rank}]")
@@ -427,31 +426,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
     # 获取边界节点
     boundary = get_boundary(node_dict, gpb)
 
-    layer_size = get_layer_size(args.n_feat, args.n_hidden, args.n_class, args.n_layers)
-    # [n_feat, n_hidden ...(n_layers-1), n_class]
-    if args.dataset == "pubmed":
-        # layer_size = [args.n_feat, 64, 16, args.n_class]
-        # [500, 64, 16, 3]
-        layer_size = [args.n_feat]
-        layer_size.extend([args.n_hidden] * (args.n_layers))
-        layer_size.append(args.n_class)
-        # [500, 16, 16, 16, 3]
-    elif args.dataset == "cora":
-        layer_size = [args.n_feat, 512, 64, args.n_class]
-        # [1433, 512, 64, 7]
-    elif args.dataset == "reddit":
-        layer_size = [args.n_feat, 256, 256, 64, args.n_class]
-        # [602, 256, 256, 64, 41]
-    elif args.dataset == "ogbn-products":
-        layer_size = [args.n_feat, 128, 64, args.n_class]
-        # [100, 128, 64, 47]
-    else:
-        raise NotImplementedError
-    
-    if args.fs:
-        # [500, 500, 64, 16, 3]
-        # [n_feat, fs(n_feat), n_hidden ...(n_layers-1), n_class]
-        layer_size.insert(0, layer_size[0])
+    layer_size = get_layer_size(args.n_feat, args.n_hidden, args.n_class, args.n_layers, args.fs)
     logger.info(f"layer_size: {layer_size}")
 
     pos = get_pos(node_dict, gpb)

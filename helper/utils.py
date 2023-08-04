@@ -224,10 +224,18 @@ def graph_partition(g, args):
                             part_method=args.partition_method, balance_edges=False, objtype=args.partition_obj)
 
 
-def get_layer_size(n_feat, n_hidden, n_class, n_layers):
+def get_layer_size(n_feat, n_hidden, n_class, n_layers, fs):
     layer_size = [n_feat]
     layer_size.extend([n_hidden] * (n_layers - 1))
     layer_size.append(n_class)
+    # [n_feat, n_hidden ...(n_layers-1), n_class]
+    # [500, 256, 256, 256, 3] n_layers=4
+
+    if fs:
+        # [n_feat, n_feat, n_hidden ...(n_layers-1), n_class]
+        # [500, 500, 256, 256, 256, 3] n_layers=4
+        layer_size.insert(0, layer_size[0])
+
     return layer_size
 
 
