@@ -59,12 +59,16 @@ def normalize(adj):
     return adj_normalized
 
 # 节点采样
-def node_wise_sampler(A, previous_nodes:list, sample_num:int):
+def node_wise_sampling(A, previous_nodes:List[int], sample_num:int):
     """
     A:torch.Tesor, 所有待选邻居节点（一个节点的所有邻居节点是包括它自己本身的）的邻接矩阵,
     行列数一样,对角线上都是1,即自己和自己连接
     previous_nodes: 上一层的节点在矩阵A中的index,而不是global id, 要求以在A中的ID从小到大的顺序排列
     sample_num:每个节点采样的节点数
+
+    返回的adj用于前向传播中
+    sampled_nodes用于下一层采样,对应A中的index,不是global id
+    previous_index是previous_nodes在after_nodes中的索引,后面训练时要用
     """
     U = A[previous_nodes,:]
     sampled_nodes = []
@@ -79,9 +83,8 @@ def node_wise_sampler(A, previous_nodes:list, sample_num:int):
 
     previous_index = torch.where(torch.isin(sampled_nodes, torch.tensor(previous_nodes)))[0]
 
-    # 返回的adj用于前向传播中,sampled_nodes用于下一层采样,list,对应A中的ID,不是原ID
-    # previous_index是previous_nodes在after_nodes中的索引,后面训练时要用
-    return adj, sampled_nodes.tolist(), previous_index.tolist()
+
+    return adj, sampled_nodes, previous_index
 
 # 层采样
 def layer_wise_sampling(A:torch.Tensor,previous_nodes:List[int],sample_num):
@@ -105,12 +108,16 @@ def layer_wise_sampling(A:torch.Tensor,previous_nodes:List[int],sample_num):
     return adj, sampled_nodes
 
 # 层重要性采样
-def layer_importance_sampler(A, previous_nodes:list, sample_num:int):
+def layer_importance_sampling(A, previous_nodes:List[int], sample_num:int):
     '''
     A:torch.Tesor, 所有待选邻居节点（一个节点的所有邻居节点是包括它自己本身的）的邻接矩阵,
     行列数一样,对角线上都是1,即自己和自己连接
     previous_nodes: 上一层的节点在矩阵A中的index,而不是global id, 要求以在A中的ID从小到大的顺序排列
     sample_num:每层节点采样的最大值
+
+    adj:adj用于前向传播中
+    adj.dtype torch.float32
+    sampled_nodes(torch.Tensor): 用于下一层采样,对应A中的index,不是global id
     '''
     lap = normalize(A)
     lap_sq = torch.mul(lap, lap)
@@ -123,9 +130,7 @@ def layer_importance_sampler(A, previous_nodes:list, sample_num:int):
     adj = torch.mul(adj, 1/p[sampled_nodes])
     adj = row_normalize(adj)
 
-    # 返回的adj用于前向传播中,tensor.
-    # sampled_nodes用于下一层采样,list,对应A中的ID,不是global ID
-    return adj, sampled_nodes.tolist()
+    return adj, sampled_nodes
 
 if __name__ == "__main__":
     data = None
