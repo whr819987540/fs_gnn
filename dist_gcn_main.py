@@ -11,6 +11,7 @@ from torch.utils.tensorboard import SummaryWriter
 from time import sleep
 from os.path import join
 import logging
+from module import fs_layer
 
 
 
@@ -66,6 +67,15 @@ if __name__ == '__main__':
         args.n_train = g.ndata['train_mask'].int().sum().item()
     logger.info(args)
 
+    # set the real dimension of the feature
+    # model为gcn_first
+    # pretrain为true，fs必为true（因为pretrain就是在训练fs），表示在pretrain阶段训练fs, 只有在这种情况下model中才有fs, 并且需要导出fs的参数
+    # pretrain为flase，fs为true，表示在offline阶段，需要加载已经训练好的fs, 然后处理feature, 但model中没有fs层
+    # pretrain为false，fs为false，表示使用gcn_first，但model中没有fs层true
+    # pretrain为flase，fs为true时模型结构会因为fs的处理而改变，所以需要重新设置n_feat
+    if args.pretrain==False and args.fs==True:
+        args.n_feat = int(args.n_feat*args.fsratio)
+
     # start multi-process and run the distributed training
     if args.backend == 'gloo':
         processes = []
@@ -103,11 +113,14 @@ if __name__ == '__main__':
         for p in processes:
             p.join()
         end_time = time()
-        logger.info("time: ", end_time - start_time)
+        logger.info(f"time: {end_time - start_time}")
+        print(f"time: {end_time - start_time}")
 
         # 获取子进程的执行结果
         model_param_grad_communication_volume = 0
         feature_embedding_communication_volume = 0
+        feature_communication_volume = 0
+        sampled_nodes_num = 0
         feature_embedding_communication_volume_list = [0]*args.n_partitions
         epoch = 0
         
@@ -124,10 +137,20 @@ if __name__ == '__main__':
             feature_embedding_communication_volume_list[ret['rank']] = tmp
             feature_embedding_communication_volume += tmp
             logger.info(f"[{ret['rank']}] feature and embedding communication volume {tmp}")
+            print(f"[{ret['rank']}] feature and embedding communication volume {tmp}")
+            
+            a = ret['feature_communication_volume']
+            feature_communication_volume += a
+            b = ret['sampled_nodes_num']
+            sampled_nodes_num += b
+            logger.info(f"[{ret['rank']}] feature communication volume {a}, sampled_nodes_num {b}")
+            print(f"[{ret['rank']}] feature communication volume {a}, sampled_nodes_num {b}")
+            
 
         print(f"args: update_freq {args.log_every}, {'fs' if args.fs else 'no-fs'}, lr {args.lr}, training times {epoch+1}")
         print(f"model param grad communication volume\t{model_param_grad_communication_volume}")
         print(f"feature and embedding communication volume\t{feature_embedding_communication_volume}")
+        print(f"AVG(feature communication volume)\t{feature_communication_volume/sampled_nodes_num}")
 
         writer = SummaryWriter(f"{ret['writer_path']} result")
         
