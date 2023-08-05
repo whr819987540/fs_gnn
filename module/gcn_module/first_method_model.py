@@ -79,7 +79,8 @@ class GCN_first(nn.Module):
         self.normal_run_time = 0 # 非fs层的运行时间
 
         self.fs_layer = None
-        if self.fs:
+        # 当model为gcn_first时，只有在pretrain为true，fs为true时，才会有fs层
+        if self.pretrain == True and self.fs == True:
             self.fs_layer = FSLayer(layer_size[0], weights, random_init_fs, pretrain)
             layer_size.pop(0)
 
@@ -106,7 +107,8 @@ class GCN_first(nn.Module):
         :param x: tensor, 第一层节点的feature, 预训练模式下是原feature, offline模式下是经过选择后的feature
         :param adjs: torch.tensor, 第一维的维数为层数, 顺序是从第一层的adj到最后一层的adj
         '''
-        if self.fs:
+        # 当model为gcn_first时，只有在pretrain为true，fs为true时，才会有fs层
+        if self.pretrain == True and self.fs == True:
             torch.cuda.synchronize()
             start = time()
             x = self.fs_layer(x) # fs层
