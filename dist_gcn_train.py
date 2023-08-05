@@ -35,13 +35,19 @@ def evaluate_induc(name, model, g, adj_matrix, layer_size, args, mode, result_fi
     model.eval()
 
     feat, labels = g.ndata['feat'], g.ndata['label']
+    feat = select_feature(args, feat)
+
     mask = g.ndata[mode + '_mask']
 
     if args.model == 'gcn_first':
-        layer_num = len(layer_size) - 2
-        if args.fs:
-            layer_num -= 1
-        adjs = sample_full(adj_matrix, layer_num)
+        gnn_layer_num = len(layer_size) - 2
+        # model为gcn_first
+        # pretrain为true，fs必为true（因为pretrain就是在训练fs），表示在pretrain阶段训练fs, 只有在这种情况下model中才有fs, 并且需要导出fs的参数
+        # pretrain为flase，fs为true，表示在offline阶段，需要加载已经训练好的fs, 然后处理feature, 但model中没有fs层
+        # pretrain为false，fs为false，表示使用gcn_first，但model中没有fs层true
+        if args.pretrain==True and args.fs==True:
+            gnn_layer_num -= 1
+        adjs = sample_full(adj_matrix, gnn_layer_num)
         logits = model(feat, adjs)
     elif args.model == 'gcn_second':
         pass
@@ -65,6 +71,8 @@ def evaluate_trans(name, model, g, adj_matrix, layer_size, args, epoch:int, writ
     model.eval()
     
     feat, labels = g.ndata['feat'], g.ndata['label']
+    feat = select_feature(args, feat)
+        
     train_mask, test_mask, val_mask = g.ndata['train_mask'], g.ndata['test_mask'], g.ndata['val_mask']
 
     if args.model == 'gcn_first':
@@ -72,11 +80,17 @@ def evaluate_trans(name, model, g, adj_matrix, layer_size, args, epoch:int, writ
         # adj = get_adj_matrix_from_graph(g)
         # logger.debug("get adj")
         # adj = adj.to(matrix_value_type).to_dense().t()
-        layer_num = len(layer_size) - 2
-        if args.fs:
-            layer_num -= 1
-        adjs = sample_full(adj_matrix, layer_num)
-        logits = model(feat, adjs)        
+        gnn_layer_num = len(layer_size) - 2
+        # model为gcn_first
+        # pretrain为true，fs必为true（因为pretrain就是在训练fs），表示在pretrain阶段训练fs, 只有在这种情况下model中才有fs, 并且需要导出fs的参数
+        # pretrain为flase，fs为true，表示在offline阶段，需要加载已经训练好的fs, 然后处理feature, 但model中没有fs层
+        # pretrain为false，fs为false，表示使用gcn_first，但model中没有fs层true
+        if args.pretrain==True and args.fs==True:
+            gnn_layer_num -= 1
+        adjs = sample_full(adj_matrix, gnn_layer_num)
+        logits = model(feat, adjs)
+    elif args.model == 'gcn_second':
+        pass
     else:
         logits = model(g, feat)
 
@@ -291,14 +305,21 @@ def create_model(layer_size,mu, args,random_init_fs=True):
             fs=args.fs,
         )
     elif args.model == 'gcn_first':
-        return GCN_first(
-            layer_size=layer_size,
-            dropout=args.dropout,
-            weights=None,
-            fs=args.fs,
-            random_init_fs=random_init_fs,
-            pretrain=args.pretrain,
-        )
+        # model为gcn_first
+        # pretrain为true，fs必为true（因为pretrain就是在训练fs），表示在pretrain阶段训练fs, 只有在这种情况下model中才有fs, 并且需要导出fs的参数
+        # pretrain为flase，fs为true，表示在offline阶段，需要加载已经训练好的fs, 然后处理feature, 但model中没有fs层
+        # pretrain为false，fs为false，表示使用gcn_first，但model中没有fs层true
+        if args.pretrain == True and args.fs == False:
+            raise ValueError
+        else:
+            return GCN_first(
+                layer_size=layer_size,
+                dropout=args.dropout,
+                weights=None,
+                fs=args.fs,
+                random_init_fs=random_init_fs,
+                pretrain=args.pretrain,
+            )
     else:
         raise NotImplementedError
 
@@ -426,7 +447,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
     # 获取边界节点
     boundary = get_boundary(node_dict, gpb)
 
-    layer_size = get_layer_size(args.n_feat, args.n_hidden, args.n_class, args.n_layers, args.fs)
+    layer_size = get_layer_size(args.n_feat, args.n_hidden, args.n_class, args.n_layers, args.model, args.pretrain, args.fs)
     logger.info(f"layer_size: {layer_size}")
 
     pos = get_pos(node_dict, gpb)
@@ -458,7 +479,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
         corr_grad=args.grad_corr, 
         corr_momentum=args.corr_momentum
     )
-    logger.info("init_buffer")
+    logger.info("init buffer to reduce model gradinets")
 
     if args.use_pp:
         logger.info(node_dict['feat'].shape)
@@ -472,6 +493,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
     torch.manual_seed(args.seed)
 
     feat = node_dict['feat']
+    feat = select_feature(args, feat)
     labels = node_dict['label']
     train_mask = node_dict['train_mask']
     part_train = train_mask.int().sum().item()
@@ -484,7 +506,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
         tmp_logger = logging.getLogger(f"[{rank}] model init")
         if rank == 0:
             # 对于rank 0即实际完成初始化的worker，random_init_fs为args值
-            model = create_model(layer_size, mu, args, random_init_fs=True)    
+            model = create_model(copy.deepcopy(layer_size), mu, args, random_init_fs=True)    
             model.cuda()
             # TODO: 模型分发, rank 0负责将初始化模型发送给其它rank
             # DONE: 模型分发
@@ -494,7 +516,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
         else:
             # 对于rank 不为0的worker，random_init_fs恒为True
             # 以免在初始化时使用全图train来初始化fs
-            model = create_model(layer_size, mu, args, random_init_fs=True)   
+            model = create_model(copy.deepcopy(layer_size), mu, args, random_init_fs=True)   
             model.cuda()
             # TODO: 接收模型参数
             # DONE: 接收模型参数
@@ -504,7 +526,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
                 # [3,16] [3]
                 dist.broadcast(param.data,src=0)
                 tmp_logger.debug(f"[{rank}] recv param {param} {param.shape}")
-        
+
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=args.lr,
@@ -573,7 +595,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
     #     node_dict.pop('val_mask')
     #     node_dict.pop('test_mask')
 
-    writer = get_writer("dist", "gpu", "fs" if args.fs else "no fs", f"dataset={args.dataset}", f"layer={layer_size} lr={args.lr} period={args.log_every}", f"partition {args.n_partitions}", now_str())
+    writer = get_writer("dist", "gpu", "fs" if args.fs else "no fs", f"dataset={args.dataset}", f"model={args.model}", f"pretrain={args.pretrain} fs={args.fs}", f"layer={layer_size} lr={args.lr} period={args.log_every}", f"partition {args.n_partitions}", now_str())
 
     backward_time = 0
 
@@ -596,8 +618,13 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
     # 最后一个线性层不属于GNN
     gnn_layer_num = len(layer_size) - 1 - 1
     # 只计算GNN的层数，不包括FS层
-    if args.fs:
-        gnn_layer_num -= 1
+    if args.model == "gcn_first":
+        # 当model为gcn_first时，只有在pretrain为true，fs为true时，才会有fs层
+        if args.pretrain==True and args.fs==True:
+            gnn_layer_num -= 1
+    else:
+        if args.fs == True:
+            gnn_layer_num -= 1
 
     # 对于需要经常进行通信的数据，将他们从GPU移动到CPU上
 
@@ -638,7 +665,9 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
     # 也不一定属于本地worker，所以需要通信
     swapper = Swapper(feat,inner_boundary_nodes_adj_matrix,args.sample_num, mapper_manager, globalid_index_mapper_in_feature, index_type, matrix_value_type, feat.dtype,all_feat)
     swapper.start_listening()
-    
+
+    # 训练中采样到的节点数
+    sampled_nodes_num = 0
     for epoch in range(args.n_epochs):
         logger.info(f"epoch: {epoch}")
         epoch_logger = logging.getLogger(f"[{rank},{epoch}]")
@@ -784,6 +813,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
 
         # glolbal id
         input_nodes = previous_nodes
+        sampled_nodes_num += input_nodes.shape[0]
         # input_nodes的feature可能在别的worker上
         # 通过all_partition_detail(global id=>rank)找到input_nodes所在的worker
         # global id
@@ -972,8 +1002,6 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
         # 模型通过reduce_hook更新后再计算train、test、val的准确率
         # 好处：减少模型的拷贝次数；在全局模型上使用全局图进行计算，而不是在子图、局部模型上计算
         async_test_flag = True
-        best_acc = 0
-        best_model = None
         if rank == 0 and args.eval and get_update_flag(epoch, args):
             # 在一个子线程中测试
             if async_test_flag:
@@ -987,7 +1015,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
                 # torch.Tensor默认不支持深度拷贝，所以选择state_dict来拷贝
                 # model_copy = copy.deepcopy(model)
                 # copy只能在主线程里面进行
-                model_copy  = create_model(layer_size,mu, args)
+                model_copy  = create_model(copy.deepcopy(layer_size),mu, args, random_init_fs=True)
                 model_copy.cuda()
                 model_copy.load_state_dict(model.state_dict())
 
@@ -1047,8 +1075,25 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
                 best_model = model_copy
             
         os.makedirs('model/', exist_ok=True)
-        torch.save(best_model.state_dict(), 'model/' + args.graph_name + '_final.pth.tar')
+        torch.save(
+            best_model.state_dict(),
+            'model/' + args.graph_name + '_final.pth.tar'
+        )
         print('model saved')
+        
+        # model为gcn_first
+        # pretrain为true，fs必为true（因为pretrain就是在训练fs），表示在pretrain阶段训练fs, 只有在这种情况下model中才有fs, 并且需要导出fs的参数
+        # pretrain为flase，fs为true，表示在offline阶段，需要加载已经训练好的fs, 然后处理feature, 但model中没有fs层
+        # pretrain为false，fs为false，表示使用gcn_first，但model中没有fs层true
+        if args.model == "gcn_first" and args.pretrain==True and args.fs==True:
+            torch.save(
+                {
+                    "fs_layer.weights":model.state_dict()['fs_layer.weights'],
+                },
+                'model/' + args.graph_name + '_fs_layer_final.pth.tar'
+            )
+            print(f'model fs layer for {args.dataset} saved')
+        
         with open(result_file_name, 'a+') as f:
             buf = str(args)+ "\n" + "Validation accuracy {:.2%}".format(best_acc)
             f.write(buf + '\n')
@@ -1080,9 +1125,11 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
         
     # 当前进程传输embedding的通信量
     ret['feature_embedding_communication_volume'] = ctx.buffer.communication_volume
+    # 当前进程传输feature的通信量
+    ret['feature_communication_volume'] = swapper.feature_communication_volume
+    ret['sampled_nodes_num'] = sampled_nodes_num
     # 将结果从子进程发送给主进程
     queue.put(ret)
-
 
 def check_parser(args):
     if args.norm == 'none':
