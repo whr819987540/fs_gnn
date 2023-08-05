@@ -19,6 +19,7 @@ from ogb.nodeproppred import DglNodePropPredDataset
 from sklearn.preprocessing import StandardScaler
 from torch.utils.tensorboard import SummaryWriter
 from helper import sampler
+from module.gcn_module.first_method_model import FeatureSeclectOut
 
 
 def load_ogb_dataset(name):
@@ -224,17 +225,22 @@ def graph_partition(g, args):
                             part_method=args.partition_method, balance_edges=False, objtype=args.partition_obj)
 
 
-def get_layer_size(n_feat, n_hidden, n_class, n_layers, fs):
+def get_layer_size(n_feat, n_hidden, n_class, n_layers, model,  pretrain, fs):
     layer_size = [n_feat]
     layer_size.extend([n_hidden] * (n_layers - 1))
     layer_size.append(n_class)
     # [n_feat, n_hidden ...(n_layers-1), n_class]
     # [500, 256, 256, 256, 3] n_layers=4
 
-    if fs:
-        # [n_feat, n_feat, n_hidden ...(n_layers-1), n_class]
-        # [500, 500, 256, 256, 256, 3] n_layers=4
-        layer_size.insert(0, layer_size[0])
+    # 当model为gcn_first时，只有在pretrain为true，fs为true时，才会有fs层
+    if model == "gcn_first":
+        if pretrain==True and fs==True:
+            layer_size.insert(0, layer_size[0])
+    else:
+        if fs==True:
+            # [n_feat, n_feat, n_hidden ...(n_layers-1), n_class]
+            # [500, 500, 256, 256, 256, 3] n_layers=4
+            layer_size.insert(0, layer_size[0])
 
     return layer_size
 
@@ -484,16 +490,22 @@ class Swapper:
         self.feature_value_type = feature_value_type
         
     def start_listening(self):
-        t1 = Thread(target=self.adjline_listener)
-        t1.start()
+        # TODO: 让listener线程优雅地退出
+        # 若在主线程中创建了子线程，当主线程结束时根据子线程daemon（设置thread.setDaemon(True)）属性值的不同可能会发生下面的两种情况之一：
+        # 如果某个子线程的daemon属性为False，主线程结束时会检测该子线程是否结束，如果该子线程还在运行，则主线程会等待它完成后再退出；
+        # 如果某个子线程的daemon属性为True，主线程运行结束时不对这个子线程进行检查而直接退出，同时所有daemon值为True的子线程将随主线程一起结束，而不论是否运行完成。
+        # 属性daemon的值默认为False，如果需要修改，必须在调用start()方法启动线程之前进行设置。
+        self.adjline_listener_thread = Thread(target=self.adjline_listener)
+        self.adjline_listener_thread.setDaemon(True)
+        self.adjline_listener_thread.start()
 
-        t2 = Thread(target=self.feature_listener)
-        t2.start()
+        self.feature_listener_thread = Thread(target=self.feature_listener)
+        self.feature_listener_thread.setDaemon(True)
+        self.feature_listener_thread.start()
 
         # t = Thread(target=self.listener)
         # t.start()
 
-        
     def listener(self):
         while True:
             # global id(no -1 in it)
@@ -759,3 +771,20 @@ def init_logging(args,log_id:str,rank=-1):
         datefmt='%Y-%m-%d %H:%M:%S',
         filename=f'results/{log_id}_{rank}.log'
     )
+
+
+def select_feature(args, feat):
+    # model为gcn_first
+    # pretrain为true，fs必为true（因为pretrain就是在训练fs），表示在pretrain阶段训练fs, 只有在这种情况下model中才有fs, 并且需要导出fs的参数
+    # pretrain为flase，fs为true，表示在offline阶段，需要加载已经训练好的fs, 然后处理feature, 但model中没有fs层
+    # pretrain为false，fs为false，表示使用gcn_first，但model中没有fs层true
+    if args.model=="gcn_first" and args.pretrain==False and args.fs==True:
+        logger = logging.getLogger(f"[{dist.get_rank()}]")
+
+        fs_weights = torch.load(
+            join('model/', args.graph_name + '_fs_layer_final.pth.tar')
+        )['fs_layer.weights'].cuda()
+        shape = feat.shape
+        feat = FeatureSeclectOut(args.fsratio, fs_weights, feat)
+        logger.info(f"offline阶段, feature{shape}为{feat.shape}")
+    return feat
