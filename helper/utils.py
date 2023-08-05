@@ -488,6 +488,8 @@ class Swapper:
         self.index_type = index_type
         self.matrix_value_type = matrix_value_type
         self.feature_value_type = feature_value_type
+
+        self.feature_communication_volume = 0
         
     def start_listening(self):
         # TODO: 让listener线程优雅地退出
@@ -676,19 +678,23 @@ class Swapper:
                 self.logger.debug(f"tag {tag}")
                 self.logger.debug(f"feature_listener recv request {nodes} {nodes.shape}")
 
+                self.feature_communication_volume += get_tensor_bytes_size(nodes)
             try:
                 # index
                 nodes = self.globalid_index_mapper_in_feature.globalid_to_index(nodes.cuda())
                 # send features to certain rank
+                data = self.features[nodes,:].cpu()
                 dist.send(
-                    self.features[nodes,:].cpu(),
+                    data,
                     dst=work,
                     tag=int(f"{self.ResponseTag}{self.FeatureTag}")
                 )
             except Exception as e:
                 self.logger.error(f"feature_listener send response exception {e}",stack_info=True)
             else:
-                self.logger.debug(f"feature_listener send response {self.features[nodes,:].cpu().shape} ")
+                self.logger.debug(f"feature_listener send response {data.shape} ")
+
+                self.feature_communication_volume += get_tensor_bytes_size(data)
 
     def get_feature_from_worker(self, rank, idx:torch.Tensor, nodes:torch.Tensor):
         """
@@ -737,6 +743,8 @@ class Swapper:
             self.logger.exception(f"get_feature_from_worker send request exception {e}",stack_info=True)
         else:
             self.logger.debug(f"get_feature_from_worker send request, {nodes} {nodes.shape}")
+
+            self.feature_communication_volume += get_tensor_bytes_size(tmp)
             
         try:
             # 接收方需要知道adj_line的形状，行是nodes的个数，列是rank中inner_nodes和boundary_nodes的个数，即globalid的个数
@@ -749,6 +757,8 @@ class Swapper:
             self.logger.error(f"get_feature_from_worker recv response exception {e}",stack_info=True)
         else:
             self.logger.debug(f"get_feature_from_worker recv response {features} {features.shape} {features.dtype}")
+
+            self.feature_communication_volume += get_tensor_bytes_size(features)
 
         return {
             "idx":idx,
@@ -788,3 +798,7 @@ def select_feature(args, feat):
         feat = FeatureSeclectOut(args.fsratio, fs_weights, feat)
         logger.info(f"offline阶段, feature{shape}为{feat.shape}")
     return feat
+
+
+def get_tensor_bytes_size(tensor:torch.Tensor)->int:
+    return tensor.numel() * tensor.element_size()
