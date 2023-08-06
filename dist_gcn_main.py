@@ -120,7 +120,6 @@ if __name__ == '__main__':
         model_param_grad_communication_volume = 0
         feature_embedding_communication_volume = 0
         feature_communication_volume = 0
-        sampled_nodes_num = 0
         feature_embedding_communication_volume_list = [0]*args.n_partitions
         epoch = 0
         
@@ -141,16 +140,15 @@ if __name__ == '__main__':
             
             a = ret['feature_communication_volume']
             feature_communication_volume += a
-            b = ret['sampled_nodes_num']
-            sampled_nodes_num += b
-            logger.info(f"[{ret['rank']}] feature communication volume {a}, sampled_nodes_num {b}")
-            print(f"[{ret['rank']}] feature communication volume {a}, sampled_nodes_num {b}")
+            logger.info(f"[{ret['rank']}] feature communication volume {a}")
+            print(f"[{ret['rank']}] feature communication volume {a}")
             
 
         print(f"args: update_freq {args.log_every}, {'fs' if args.fs else 'no-fs'}, lr {args.lr}, training times {epoch+1}")
         print(f"model param grad communication volume\t{model_param_grad_communication_volume}")
         print(f"feature and embedding communication volume\t{feature_embedding_communication_volume}")
-        print(f"AVG(feature communication volume)\t{feature_communication_volume/sampled_nodes_num}")
+        feature_communication_volume_per_epoch = feature_communication_volume/(args.n_epochs*args.n_partitions)
+        print(f"AVG(feature communication volume)\t{feature_communication_volume_per_epoch}")
 
         writer = SummaryWriter(f"{ret['writer_path']} result")
         

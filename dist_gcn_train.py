@@ -666,8 +666,6 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
     swapper = Swapper(feat,inner_boundary_nodes_adj_matrix,args.sample_num, mapper_manager, globalid_index_mapper_in_feature, index_type, matrix_value_type, feat.dtype,all_feat)
     swapper.start_listening()
 
-    # 训练中采样到的节点数
-    sampled_nodes_num = 0
     for epoch in range(args.n_epochs):
         logger.info(f"epoch: {epoch}")
         epoch_logger = logging.getLogger(f"[{rank},{epoch}]")
@@ -824,7 +822,6 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
 
         # glolbal id
         input_nodes = previous_nodes
-        sampled_nodes_num += input_nodes.shape[0]
         # input_nodes的feature可能在别的worker上
         # 通过all_partition_detail(global id=>rank)找到input_nodes所在的worker
         # global id
@@ -1138,7 +1135,6 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
     ret['feature_embedding_communication_volume'] = ctx.buffer.communication_volume
     # 当前进程传输feature的通信量
     ret['feature_communication_volume'] = swapper.feature_communication_volume
-    ret['sampled_nodes_num'] = sampled_nodes_num
     # 将结果从子进程发送给主进程
     queue.put(ret)
 
