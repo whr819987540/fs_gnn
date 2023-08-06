@@ -317,7 +317,6 @@ def create_model(layer_size,mu, args,random_init_fs=True):
                 dropout=args.dropout,
                 weights=None,
                 fs=args.fs,
-                random_init_fs=random_init_fs,
                 pretrain=args.pretrain,
             )
     else:

@@ -59,20 +59,17 @@ class Graphsage_first(nn.Module):
         return x
 
 class GCN_first(nn.Module):
-    def __init__(self, layer_size:List[int], dropout, weights:torch.Tensor,
-                 fs : bool = False, random_init_fs : bool = True, pretrain : bool = True):
+    def __init__(self, layer_size:List[int], dropout, weights:torch.Tensor, fs : bool = False, pretrain : bool = True):
         '''
         :param layers_size, [feature, feature(optional if fs), hidden*layer, label]
         :param dropout: dropout比例
         
         :param fs: 默认为False, 即不加FS层
-        :param random_init_fs: 默认为True, 即随机初始化FS层参数, 否则, 用Gini初始化
         :param pretrain: 默认为True, 即使用第一种预训练的方式, 否则, 是用第二种全程online的方法
-        :param weights: FS层参数的初始值, random为True时, 传0就行了, 因为weights不会被使用; random为False时, 传continous_feature_importance_gini的输出
+        :param weights: FS层参数的初始值, weights为None, 表示用随机值进行初始化; weights不为None, 表示用continous_feature_importance_gini函数初始化
         '''
         super(GCN_first, self).__init__()
         self.fs = fs
-        self.random_init_fs = random_init_fs
         self.pretrain = pretrain
 
         self.fs_run_time = 0 # fs层的运行时间
@@ -81,7 +78,7 @@ class GCN_first(nn.Module):
         self.fs_layer = None
         # 当model为gcn_first时，只有在pretrain为true，fs为true时，才会有fs层
         if self.pretrain == True and self.fs == True:
-            self.fs_layer = FSLayer(layer_size[0], weights, random_init_fs, pretrain)
+            self.fs_layer = FSLayer(layer_size[0], weights, pretrain)
             layer_size.pop(0)
 
         self.gcs = nn.ModuleList()
