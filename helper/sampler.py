@@ -68,7 +68,7 @@ def node_wise_sampling(A:torch.Tensor, previous_nodes:List[int], sample_num:int)
 
     返回的adj用于前向传播中
     sampled_nodes用于下一层采样,对应A中的index,不是global id
-    previous_index是previous_nodes在after_nodes中的索引,后面训练时要用
+    previous_index是previous_nodes在after_nodes中的索引,后面训练时要用,从第一层到最后一层组成一个list,传给Graphsage_first中的参数previous_indices
     """
     U = A[previous_nodes,:]
     sampled_nodes = []
