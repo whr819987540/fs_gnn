@@ -81,7 +81,7 @@ def create_parser():
                         help="don't use pretrain mode")
     parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], default='DEBUG')
     parser.add_argument("--fsratio", "--fsratio", type=float, default=0.5,help="the ratio of selected features of fs layer")
-    parser.add_argument('--sampling-method', choices=['layer_wise_sampling', 'layer_importance_sampling', 'node_wise_sampling'], default='layer_importance_sampling')
+    parser.add_argument('--sampling-method', choices=['layer_wise_sampling', 'layer_importance_sampling', 'node_wise_sampling', 'full_graph_sampling'],default='layer_importance_sampling')
     parser.add_argument('--fs-init-method', choices=['gini', 'random'], help='init weights of fs layer with gini impurity or init it randomly',default='gini')
     
     parser.set_defaults(eval=True)
