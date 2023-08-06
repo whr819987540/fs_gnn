@@ -30,7 +30,7 @@ class Graphsage_first(nn.Module):
         self.gcs.append(GraphSageConvolution(nfeat, nhid))
         for _ in range(layers - 1):
             self.gcs.append(GraphSageConvolution(2 * nhid, nhid))
-        self.gc_out = nn.Linear(nhid, num_classes)
+        self.gc_out = nn.Linear(2 * nhid, num_classes)
 
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(dropout)
