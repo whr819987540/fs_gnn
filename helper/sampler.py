@@ -59,7 +59,7 @@ def normalize(adj):
     return adj_normalized
 
 # 节点采样
-def node_wise_sampling(A, previous_nodes:List[int], sample_num:int):
+def node_wise_sampling(A:torch.Tensor, previous_nodes:List[int], sample_num:int):
     """
     A:torch.Tesor, 所有待选邻居节点（一个节点的所有邻居节点是包括它自己本身的）的邻接矩阵,
     行列数一样,对角线上都是1,即自己和自己连接
@@ -87,7 +87,7 @@ def node_wise_sampling(A, previous_nodes:List[int], sample_num:int):
     return adj, sampled_nodes, previous_index
 
 # 层采样
-def layer_wise_sampling(A:torch.Tensor,previous_nodes:List[int],sample_num):
+def layer_wise_sampling(A:torch.Tensor,previous_nodes:List[int],sample_num:int):
     '''
         A:torch.Tesor, 所有待选邻居节点（一个节点的所有邻居节点是包括它自己本身的）的邻接矩阵,
         行列数一样,对角线上都是1,即自己和自己连接
@@ -108,7 +108,7 @@ def layer_wise_sampling(A:torch.Tensor,previous_nodes:List[int],sample_num):
     return adj, sampled_nodes
 
 # 层重要性采样
-def layer_importance_sampling(A, previous_nodes:List[int], sample_num:int):
+def layer_importance_sampling(A:torch.Tensor, previous_nodes:List[int], sample_num:int):
     '''
     A:torch.Tesor, 所有待选邻居节点（一个节点的所有邻居节点是包括它自己本身的）的邻接矩阵,
     行列数一样,对角线上都是1,即自己和自己连接
