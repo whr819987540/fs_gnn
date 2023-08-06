@@ -9,7 +9,7 @@ from sklearn.metrics import f1_score
 from new_layer import feature_importance_gini, loss_func
 from torch.utils.tensorboard import SummaryWriter
 from module.gcn_module import gcn_model
-from helper.sampler import layer_wise_sampling
+from helper.sampler import layer_wise_sampling, layer_importance_sampling, node_wise_sampling
 from module.gcn_module.first_method_model import GCN_first
 import logging
 from helper.inference import sample_full
@@ -789,9 +789,20 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
 
                 adj_matrix[index, merged_nodes_mapper.globalid_to_index(nodes_in_adj_line_global_id)] = 1
 
+            adj_matrix_clone = adj_matrix.clone()
+            adj_matrix = adj_matrix_clone + adj_matrix_clone.T
+            # 将对角线置为1
+            for i in range(adj_matrix.shape[0]):
+                adj_matrix[i,i] = 1
+
             # update previous_nodes from layer-wise sampling function
             # global id => index
-            adj, sampled_nodes = layer_wise_sampling(adj_matrix, merged_nodes_mapper.globalid_to_index(previous_nodes), args.sample_num)
+            if args.sampling_method == "layer_wise_sampling":
+                adj, sampled_nodes = layer_wise_sampling(adj_matrix, merged_nodes_mapper.globalid_to_index(previous_nodes), args.sample_num)
+            elif args.sampling_method == "layer_importance_sampling":
+                adj, sampled_nodes = layer_importance_sampling(adj_matrix, merged_nodes_mapper.globalid_to_index(previous_nodes), args.sample_num)
+            else:
+                raise ValueError
             # if merged_nodes_mapper.index_to_globalid(sampled_nodes).shape[0] != 
 
             layer_logger.debug(
