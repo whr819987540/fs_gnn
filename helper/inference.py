@@ -20,7 +20,8 @@ def sample_full(adj: torch.Tensor, layer_num: int, sampling_method: str):
         adj = normalize(adj)
     else:
         adj = row_normalize(adj)
-    adjs = [adj for _ in range(layer_num)]
+    # adjs = [adj for _ in range(layer_num)]
+    adjs = [adj]*layer_num # 省内存，既然是同样的，只存储同一个Tensor对象
 
     previous_index = torch.arange(adj.shape[0]).tolist()
     previous_indices = [previous_index for _ in range(layer_num)]
