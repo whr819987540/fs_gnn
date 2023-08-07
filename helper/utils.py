@@ -225,22 +225,24 @@ def graph_partition(g, args):
                             part_method=args.partition_method, balance_edges=False, objtype=args.partition_obj)
 
 
-def get_layer_size(n_feat, n_hidden, n_class, n_layers, model,  pretrain, fs):
-    layer_size = [n_feat]
-    layer_size.extend([n_hidden] * (n_layers - 1))
-    layer_size.append(n_class)
+def get_layer_size(args):
+    layer_size = [args.n_feat]
+    layer_size.extend([args.n_hidden] * (args.n_layers - 1))
+    layer_size.append(args.n_class)
     # [n_feat, n_hidden ...(n_layers-1), n_class]
     # [500, 256, 256, 256, 3] n_layers=4
 
-    # 当model为gcn_first时，只有在pretrain为true，fs为true时，才会有fs层
-    if model == "gcn_first":
-        if pretrain==True and fs==True:
-            layer_size.insert(0, layer_size[0])
-    else:
-        if fs==True:
-            # [n_feat, n_feat, n_hidden ...(n_layers-1), n_class]
-            # [500, 500, 256, 256, 256, 3] n_layers=4
-            layer_size.insert(0, layer_size[0])
+    # 当model为gcn_first、采样方式为layer_importance_sampling时，只有在pretrain为true，fs为true时，才会有fs层真正出现在model中，即layer_size中
+    if args.model == "gcn_first" and args.sampling_method=="layer_importance_sampling" and args.pretrain==True and args.fs==True:
+        layer_size.insert(0, layer_size[0])
+    # if model == "gcn_first":
+    #     if pretrain==True and fs==True:
+    #         layer_size.insert(0, layer_size[0])
+    # else:
+    #     if fs==True:
+    #         # [n_feat, n_feat, n_hidden ...(n_layers-1), n_class]
+    #         # [500, 500, 256, 256, 256, 3] n_layers=4
+    #         layer_size.insert(0, layer_size[0])
 
     return layer_size
 
@@ -802,3 +804,19 @@ def select_feature(args, feat):
 
 def get_tensor_bytes_size(tensor:torch.Tensor)->int:
     return tensor.numel() * tensor.element_size()
+
+def get_gnn_layer_num(layer_size:List[int],args)->int:
+    # 最后一个线性层不属于GNN
+    gnn_layer_num = len(layer_size) - 1 - 1
+
+    # model为gcn_first,采样方式为layer_importance_sampling
+    # pretrain为true，fs必为true（因为pretrain就是在训练fs），表示在pretrain阶段训练fs, 只有在这种情况下model中才有fs, 并且需要导出fs的参数
+    # pretrain为flase，fs为true，表示在offline阶段，需要加载已经训练好的fs, 然后处理feature, 但model中没有fs层
+    # pretrain为false，fs为false，表示使用gcn_first，但model中没有fs层true
+
+    # 只计算GNN的层数，不包括FS层
+    # 当model为gcn_first、采样方式为layer_importance_sampling时，只有在pretrain为true，fs为true时，才会有fs层真正出现在model中，即layer_size中
+    if args.model == "gcn_first" and args.sampling_method=="layer_importance_sampling" and args.pretrain==True and args.fs==True:
+        gnn_layer_num -= 1
+
+    return gnn_layer_num

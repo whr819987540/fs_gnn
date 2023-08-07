@@ -39,13 +39,7 @@ def evaluate_induc(name, model, g, adj_matrix, layer_size, args, mode, result_fi
     mask = g.ndata[mode + '_mask']
 
     if args.model == 'gcn_first':
-        gnn_layer_num = len(layer_size) - 2
-        # model为gcn_first
-        # pretrain为true，fs必为true（因为pretrain就是在训练fs），表示在pretrain阶段训练fs, 只有在这种情况下model中才有fs, 并且需要导出fs的参数
-        # pretrain为flase，fs为true，表示在offline阶段，需要加载已经训练好的fs, 然后处理feature, 但model中没有fs层
-        # pretrain为false，fs为false，表示使用gcn_first，但model中没有fs层true
-        if args.pretrain==True and args.fs==True:
-            gnn_layer_num -= 1
+        gnn_layer_num = get_gnn_layer_num(layer_size,args)
         adjs, previous_indices = sample_full(adj_matrix, gnn_layer_num, args.sampling_method)
         logits = model(feat, adjs)
     elif args.model == 'gcn_second':
@@ -79,13 +73,7 @@ def evaluate_trans(name, model, g, adj_matrix, layer_size, args, epoch:int, writ
         # adj = get_adj_matrix_from_graph(g)
         # logger.debug("get adj")
         # adj = adj.to(matrix_value_type).to_dense().t()
-        gnn_layer_num = len(layer_size) - 2
-        # model为gcn_first
-        # pretrain为true，fs必为true（因为pretrain就是在训练fs），表示在pretrain阶段训练fs, 只有在这种情况下model中才有fs, 并且需要导出fs的参数
-        # pretrain为flase，fs为true，表示在offline阶段，需要加载已经训练好的fs, 然后处理feature, 但model中没有fs层
-        # pretrain为false，fs为false，表示使用gcn_first，但model中没有fs层true
-        if args.pretrain==True and args.fs==True:
-            gnn_layer_num -= 1
+        gnn_layer_num = get_gnn_layer_num(layer_size,args)
         adjs, previous_indices = sample_full(adj_matrix, gnn_layer_num, args.sampling_method)
         logits = model(feat, adjs)
     elif args.model == 'gcn_second':
@@ -455,7 +443,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
     # 获取边界节点
     boundary = get_boundary(node_dict, gpb)
 
-    layer_size = get_layer_size(args.n_feat, args.n_hidden, args.n_class, args.n_layers, args.model, args.pretrain, args.fs)
+    layer_size = get_layer_size(args)
     logger.info(f"layer_size: {layer_size}")
 
     pos = get_pos(node_dict, gpb)
@@ -623,16 +611,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
     # input nodes=previous nodes //采样到第0层的节点就是输入节点，需要它们的feature
     # model(featlinput nodes], adis,labels[batch]) //横型训练
 
-    # 最后一个线性层不属于GNN
-    gnn_layer_num = len(layer_size) - 1 - 1
-    # 只计算GNN的层数，不包括FS层
-    if args.model == "gcn_first":
-        # 当model为gcn_first时，只有在pretrain为true，fs为true时，才会有fs层
-        if args.pretrain==True and args.fs==True:
-            gnn_layer_num -= 1
-    else:
-        if args.fs == True:
-            gnn_layer_num -= 1
+    gnn_layer_num = get_gnn_layer_num(layer_size,args)
 
     # 对于需要经常进行通信的数据，将他们从GPU移动到CPU上
 
