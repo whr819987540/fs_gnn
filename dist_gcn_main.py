@@ -107,6 +107,9 @@ if __name__ == '__main__':
             if not os.path.exists(path):
                 gini_impurity = continous_feature_importance_gini(g.ndata['feat'].cuda(), g.ndata['label'].cuda())
                 torch.save(gini_impurity,path)
+                logger.info(f"save gini impurity to {path}")
+            else:
+                logger.info(f"gini impurity from {path} already exists")
         
         # 统计训练一定轮数所用的时间
         # 实际训练轮数由rank=0的进程返回
