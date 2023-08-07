@@ -785,20 +785,37 @@ def init_logging(args,log_id:str,rank=-1):
     )
 
 
-def select_feature(args, feat):
+def select_feature(args, feat, random_selection_mask=None):
     # model为gcn_first
     # pretrain为true，fs必为true（因为pretrain就是在训练fs），表示在pretrain阶段训练fs, 只有在这种情况下model中才有fs, 并且需要导出fs的参数
     # pretrain为flase，fs为true，表示在offline阶段，需要加载已经训练好的fs, 然后处理feature, 但model中没有fs层
     # pretrain为false，fs为false，表示使用gcn_first，但model中没有fs层true
-    if args.model=="gcn_first" and args.pretrain==False and args.fs==True:
-        logger = logging.getLogger(f"[{dist.get_rank()}]")
+    logger = logging.getLogger(f"[{dist.get_rank()}]")
+    if args.model=="gcn_first":
+        if args.sampling_method=="layer_importance_sampling":
+            if args.pretrain==False and args.fs==True:
+                if args.fs_init_method=="seed":
+                    if random_selection_mask is None:
+                        raise ValueError
+                    shape=feat.shape
+                    feat = feat[:,random_selection_mask]
+                    logger.info(f"使用random selection, feature shape由{shape}变为{feat.shape}")
+                else:
+                    fs_weights = torch.load(
+                        join('model/', args.graph_name + '_fs_layer_final.pth.tar')
+                    )['fs_layer.weights'].cuda()
+                    shape = feat.shape
+                    feat = FeatureSeclectOut(args.fsratio, fs_weights, feat)
+                    logger.info(f"offline阶段, feature shape由{shape}变为{feat.shape}")
+        elif args.sampling_method=="layer_wise_sampling":
+            if args.pretrain==False and args.fs==True:
+                if args.fs_init_method=="seed":
+                    if random_selection_mask is None:
+                        raise ValueError
+                    shape=feat.shape
+                    feat = feat[:,random_selection_mask]
+                    logger.info(f"使用random selection, feature shape由{shape}变为{feat.shape}")
 
-        fs_weights = torch.load(
-            join('model/', args.graph_name + '_fs_layer_final.pth.tar')
-        )['fs_layer.weights'].cuda()
-        shape = feat.shape
-        feat = FeatureSeclectOut(args.fsratio, fs_weights, feat)
-        logger.info(f"offline阶段, feature{shape}为{feat.shape}")
     return feat
 
 

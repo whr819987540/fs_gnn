@@ -24,7 +24,7 @@ def calc_acc(logits, labels):
 
 
 @torch.no_grad()
-def evaluate_induc(name, model, g, adj_matrix, layer_size, args, mode, result_file_name=None):
+def evaluate_induc(name, model, g, adj_matrix, layer_size, args, mode, random_selection_mask=None, result_file_name=None):
     """
     mode: 'val' or 'test'
     """
@@ -34,7 +34,7 @@ def evaluate_induc(name, model, g, adj_matrix, layer_size, args, mode, result_fi
     model.eval()
 
     feat, labels = g.ndata['feat'], g.ndata['label']
-    feat = select_feature(args, feat)
+    feat = select_feature(args, feat, random_selection_mask)
 
     mask = g.ndata[mode + '_mask']
 
@@ -58,13 +58,13 @@ def evaluate_induc(name, model, g, adj_matrix, layer_size, args, mode, result_fi
 
 
 @torch.no_grad()
-def evaluate_trans(name, model, g, adj_matrix, layer_size, args, epoch:int, writer:SummaryWriter, result_file_name=None):
+def evaluate_trans(name, model, g, adj_matrix, layer_size, args, epoch:int, writer:SummaryWriter, random_selection_mask=None, result_file_name=None):
     logger = logging.getLogger("evaluate_trans")
     logger.debug("start evaluate_trans")
     model.eval()
     
     feat, labels = g.ndata['feat'], g.ndata['label']
-    feat = select_feature(args, feat)
+    feat = select_feature(args, feat, random_selection_mask)
         
     train_mask, test_mask, val_mask = g.ndata['train_mask'], g.ndata['test_mask'], g.ndata['val_mask']
 
@@ -489,7 +489,20 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
     torch.manual_seed(args.seed)
 
     feat = node_dict['feat']
-    feat = select_feature(args, feat)
+    random_selection_mask = None
+    if args.model == 'gcn_first' and (args.sampling_method=="layer_importance_sampling" or args.sampling_method=="layer_wise_sampling") and args.pretrain == False and args.fs == True and args.fs_init_method=="seed":
+        # 传输中的类型不能是bool
+        random_selection_mask = torch.zeros(feat.shape[1],dtype=matrix_value_type)
+        if rank==0:
+            index = torch.randperm(feat.shape[1],dtype=index_type)[:args.n_feat]
+            random_selection_mask[index]=1
+            dist.broadcast(random_selection_mask,src=0)
+        else:
+            dist.broadcast(random_selection_mask,src=0)
+        # 充当索引, 类型必须是bool
+        random_selection_mask = random_selection_mask.bool().cuda()
+    
+    feat = select_feature(args, feat, random_selection_mask)
     labels = node_dict['label']
     train_mask = node_dict['train_mask']
     part_train = train_mask.int().sum().item()
@@ -1061,6 +1074,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
                             args,
                             epoch,
                             writer,
+                            random_selection_mask,
                             result_file_name
                         )
                     )
@@ -1087,6 +1101,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
                     args,
                     epoch,
                     writer,
+                    random_selection_mask,
                     result_file_name
                 )
 
@@ -1134,7 +1149,8 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
             full_g_adj_matrix,
             layer_size,
             args,
-            'test'
+            'test',
+            random_selection_mask,
         )
         
         # 所有进程传梯度的通信量

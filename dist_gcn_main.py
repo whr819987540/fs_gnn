@@ -74,7 +74,7 @@ if __name__ == '__main__':
     # pretrain为flase，fs为true，表示在offline阶段，需要加载已经训练好的fs, 然后处理feature, 但model中没有fs层
     # pretrain为false，fs为false，表示使用gcn_first，但model中没有fs层true
     # pretrain为flase，fs为true时模型结构会因为fs的处理而改变，所以需要重新设置n_feat
-    if args.model=="gcn_first" and args.sampling_method=="layer_importance_sampling" and args.pretrain==False and args.fs==True:
+    if args.model=="gcn_first" and (args.sampling_method=="layer_importance_sampling" or args.sampling_method=="layer_wise_sampling") and args.pretrain==False and args.fs==True:
         args.n_feat = int(args.n_feat*args.fsratio)
 
     # start multi-process and run the distributed training
