@@ -12,6 +12,7 @@ from time import sleep
 from os.path import join
 import logging
 from module import fs_layer
+from helper.gini import continous_feature_importance_gini
 
 
 
@@ -98,7 +99,15 @@ if __name__ == '__main__':
         # 建立node globalid到partition id的映射
         # 建立globalid与index的映射
         all_partition_detail, mapper_manager = get_all_partition_detail_and_globalid_index_mapper_manager(g.num_nodes(), min(start_id + args.parts_per_node, args.n_partitions)-start_id,args)
-            
+
+        # 在主进程中提前计算gini impurity，子进程直接加载
+        os.makedirs('gini/', exist_ok=True)
+        if args.model=="gcn_first" and args.sampling_method=="layer_importance_sampling" and args.pretrain==True and args.fs==True and args.fs_init_method=="gini":
+            path = join('gini',f"{args.dataset}_gini_impurity.pth")
+            if not os.path.exists(path):
+                gini_impurity = continous_feature_importance_gini(g.ndata['feat'].cuda(), g.ndata['label'].cuda())
+                torch.save(gini_impurity,path)
+        
         # 统计训练一定轮数所用的时间
         # 实际训练轮数由rank=0的进程返回
         # 从启动partition个子进程开始到所有子进程退出
