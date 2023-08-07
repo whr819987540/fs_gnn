@@ -46,7 +46,7 @@ def evaluate_induc(name, model, g, adj_matrix, layer_size, args, mode, result_fi
         # pretrain为false，fs为false，表示使用gcn_first，但model中没有fs层true
         if args.pretrain==True and args.fs==True:
             gnn_layer_num -= 1
-        adjs = sample_full(adj_matrix, gnn_layer_num)
+        adjs, previous_indices = sample_full(adj_matrix, gnn_layer_num, args.sampling_method)
         logits = model(feat, adjs)
     elif args.model == 'gcn_second':
         pass
@@ -86,7 +86,7 @@ def evaluate_trans(name, model, g, adj_matrix, layer_size, args, epoch:int, writ
         # pretrain为false，fs为false，表示使用gcn_first，但model中没有fs层true
         if args.pretrain==True and args.fs==True:
             gnn_layer_num -= 1
-        adjs = sample_full(adj_matrix, gnn_layer_num)
+        adjs, previous_indices = sample_full(adj_matrix, gnn_layer_num, args.sampling_method)
         logits = model(feat, adjs)
     elif args.model == 'gcn_second':
         pass
