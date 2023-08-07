@@ -45,17 +45,30 @@ class MyDataset(Dataset):
 #     return indices, values, shape
 
 def row_normalize(tensor):
-    row_sum = tensor.sum(dim=1, keepdim=True) + 1e-20
-    normalized_tensor = tensor / row_sum
+    if tensor.layout is torch.sparse_coo:
+        tensor = tensor.coalesce()
+        row_sum = torch.sparse.sum(tensor, dim=1).to_dense() + 1e-20
+        normalized_tensor = torch.sparse.FloatTensor(tensor.indices(), tensor.values() / row_sum[tensor.indices()[0]], tensor.size())
+    else:
+        row_sum = tensor.sum(dim=1, keepdim=True) + 1e-20
+        normalized_tensor = tensor / row_sum
     return normalized_tensor
 
 def normalize(adj):
-    rowsum = adj.sum(dim=1) + 1e-20
-    d_inv_sqrt = torch.pow(rowsum, -0.5)
-    d_inv_sqrt[torch.isinf(d_inv_sqrt)] = 0.
-    d_mat_inv_sqrt = torch.diag(d_inv_sqrt)
-    adj = adj.to(d_mat_inv_sqrt.dtype)
-    adj_normalized = adj.matmul(d_mat_inv_sqrt).transpose(0, 1).matmul(d_mat_inv_sqrt)
+    if adj.layout is torch.sparse_coo:
+        adj = adj.coalesce()
+        rowsum = torch.sparse.sum(adj, dim=1).to_dense() + 1e-20
+        d_inv_sqrt = torch.pow(rowsum, -0.5)
+        d_inv_sqrt[torch.isinf(d_inv_sqrt)] = 0.
+        adj_normalized = torch.sparse.FloatTensor(adj.indices(), adj.values() * d_inv_sqrt[adj.indices()[0]] * d_inv_sqrt[adj.indices()[1]],
+                                                adj.size())
+    else:
+        rowsum = adj.sum(dim=1) + 1e-20
+        d_inv_sqrt = torch.pow(rowsum, -0.5)
+        d_inv_sqrt[torch.isinf(d_inv_sqrt)] = 0.
+        d_mat_inv_sqrt = torch.diag(d_inv_sqrt)
+        adj = adj.to(d_mat_inv_sqrt.dtype)
+        adj_normalized = adj.matmul(d_mat_inv_sqrt).transpose(0, 1).matmul(d_mat_inv_sqrt)
     return adj_normalized
 
 # 节点采样
