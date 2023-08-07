@@ -79,6 +79,14 @@ if __name__ == '__main__':
 
     # start multi-process and run the distributed training
     if args.backend == 'gloo':
+        # 单机训练
+        if args.sampling_method=="full_graph_sampling":
+            if args.model!="gcn_first" or args.pretrain!=False or args.fs!=False:
+                raise ValueError
+            logger.info("full graph sampling")
+            dist_gcn_train.single_run(args)
+            exit(0)
+
         processes = []
         if 'CUDA_VISIBLE_DEVICES' in os.environ:
             devices = os.environ['CUDA_VISIBLE_DEVICES'].split(',')

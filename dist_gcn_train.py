@@ -1174,6 +1174,148 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
     # 将结果从子进程发送给主进程
     queue.put(ret)
 
+
+def single_run(args):
+    matrix_value_type = torch.int32
+    logger = logging.getLogger(f"[single]")
+    
+    # 加载全图
+    full_g, n_feat, n_class = load_data(args.dataset)
+    full_g = full_g.to(torch.device('cuda'))
+    full_g_adj_matrix = get_adj_matrix_from_graph(full_g)
+    full_g_adj_matrix = full_g_adj_matrix.to(matrix_value_type).to_dense().t()
+    # full_g_adj_matrix = full_g_adj_matrix.to(matrix_value_type)
+
+    feat, labels = full_g.ndata['feat'], full_g.ndata['label']
+    train_mask, test_mask, val_mask = full_g.ndata['train_mask'], full_g.ndata['test_mask'], full_g.ndata['val_mask']
+    print(train_mask.sum(), test_mask.sum(), val_mask.sum())
+    
+    # 加载模型
+    layer_size = get_layer_size(args)
+    logger.info(f"layer_size: {layer_size}")
+    gnn_layer_num = get_gnn_layer_num(layer_size,args)
+    model = create_model(copy.deepcopy(layer_size), None, args)
+    model.cuda()
+
+    # 邻接矩阵
+    adjs, previous_indices = sample_full(full_g_adj_matrix, gnn_layer_num, args.sampling_method)
+
+    # writer 
+    if args.model=="gcn_first":
+        if args.sampling_method=="full_graph_sampling":
+            tag=1
+        elif args.sampling_method=="layer_wise_sampling":
+            if args.fs==False:
+                tag=2
+            else:
+                tag=3
+        elif args.sampling_method=="layer_importance_sampling":
+            if args.pretrain==True:
+                tag=8
+            else:
+                if args.fs==False:
+                    tag=4
+                else:
+                    if args.fs_init_method=="seed":
+                        tag=5
+                    else:
+                        tag=8
+        else:
+            raise ValueError
+    else:
+        raise ValueError
+
+    writer = get_writer(
+        "dist", "gpu", "fs" if args.fs else "no fs",
+        f"dataset={args.dataset}",
+        f"model={args.model},sampling_method={args.sampling_method},pretrain={args.pretrain},fs={args.fs},fs_init_method={args.fs_init_method}",
+        f"tag={tag}",
+        f"layer_size={layer_size} lr={args.lr} period={args.log_every}",
+        f"partition={args.n_partitions}",
+        now_str()
+    )
+
+    if args.grad_corr and args.feat_corr:
+        result_file_name = 'results/%s_n%d_p%d_grad_feat.txt' % (
+            args.dataset, args.n_partitions, int(args.enable_pipeline))
+    elif args.grad_corr:
+        result_file_name = 'results/%s_n%d_p%d_grad.txt' % (args.dataset, args.n_partitions, int(args.enable_pipeline))
+    elif args.feat_corr:
+        result_file_name = 'results/%s_n%d_p%d_feat.txt' % (args.dataset, args.n_partitions, int(args.enable_pipeline))
+    else:
+        result_file_name = 'results/%s_n%d_p%d.txt' % (args.dataset, args.n_partitions, int(args.enable_pipeline))
+    logger.debug(f"result_file_name: {result_file_name}")
+
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=args.lr,
+        weight_decay=args.weight_decay
+    )
+
+    for epoch in range(args.n_epochs):
+        logits = model(feat, adjs)
+
+        loss = loss_func(
+            results=logits[train_mask],
+            labels=labels[train_mask],
+            lamda=args.lamda,
+            sigma=args.sigma,
+            model=model,
+            fs=args.fs,
+            args=args,
+        )
+
+        optimizer.zero_grad(set_to_none=True)
+        # OPT3: calculate the gradients but aggregate the gradients periodically by reduce_hook and optimizer.state['step']
+        # reduce_hook will aggregate the gradients of the same parameter on different processes
+        torch.cuda.synchronize()
+        start = time.time()
+        loss.backward()
+        torch.cuda.synchronize()
+        end = time.time()
+
+        optimizer.step()
+
+        train_acc = calc_acc(logits[train_mask], labels[train_mask])
+        test_acc = calc_acc(logits[test_mask], labels[test_mask])
+        val_acc = calc_acc(logits[val_mask], labels[val_mask])
+
+        train_loss = loss_func(
+                    results=logits[train_mask],
+                    labels=labels[train_mask],
+                    lamda=args.lamda,
+                    sigma=args.sigma,
+                    model=model,
+                    fs=args.fs,
+                    args=args,
+                ) / train_mask.int().sum().item()
+        test_loss = loss_func(
+                    results=logits[test_mask],
+                    labels=labels[test_mask],
+                    lamda=args.lamda,
+                    sigma=args.sigma,
+                    model=model,
+                    fs=args.fs,
+                    args=args,
+                ) / train_mask.int().sum().item()
+        val_loss = loss_func(
+                    results=logits[val_mask],
+                    labels=labels[val_mask],
+                    lamda=args.lamda,
+                    sigma=args.sigma,
+                    model=model,
+                    fs=args.fs,
+                    args=args,
+                ) / val_mask.int().sum().item()
+
+        print(f"epoch {epoch} train_acc {train_acc} test_acc {test_acc} val_acc {val_acc}")
+        writer.add_scalar("train_acc", train_acc, epoch)
+        writer.add_scalar("test_acc", test_acc, epoch)
+        writer.add_scalar("val_acc", val_acc, epoch)
+        writer.add_scalar("train_loss", train_loss, epoch)
+        writer.add_scalar("test_loss", test_loss, epoch)
+        writer.add_scalar("val_loss", val_loss, epoch)
+        
 def check_parser(args):
     if args.norm == 'none':
         args.norm = None
