@@ -591,7 +591,40 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
     #     node_dict.pop('val_mask')
     #     node_dict.pop('test_mask')
 
-    writer = get_writer("dist", "gpu", "fs" if args.fs else "no fs", f"dataset={args.dataset}", f"model={args.model}", f"pretrain={args.pretrain} fs={args.fs}", f"layer={layer_size} lr={args.lr} period={args.log_every}", f"partition {args.n_partitions}", now_str())
+    if args.model=="gcn_first":
+        if args.sampling_method=="full_graph_sampling":
+            tag=1
+        elif args.sampling_method=="layer_wise_sampling":
+            if args.fs==False:
+                tag=2
+            else:
+                tag=3
+        elif args.sampling_method=="layer_importance_sampling":
+            if args.pretrain==True:
+                tag=8
+            else:
+                if args.fs==False:
+                    tag=4
+                else:
+                    if args.fs_init_method=="seed":
+                        tag=5
+                    else:
+                        tag=8
+        else:
+            raise ValueError
+    else:
+        raise ValueError
+                
+
+    writer = get_writer(
+        "dist", "gpu", "fs" if args.fs else "no fs",
+        f"dataset={args.dataset}",
+        f"model={args.model},sampling_method={args.sampling_method},pretrain={args.pretrain},fs={args.fs},fs_init_method={args.fs_init_method}",
+        f"tag={tag}",
+        f"layer_size={layer_size} lr={args.lr} period={args.log_every}",
+        f"partition={args.n_partitions}",
+        now_str()
+    )
 
     backward_time = 0
 
