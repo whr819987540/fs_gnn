@@ -14,7 +14,6 @@ from module.gcn_module.first_method_model import GCN_first
 import logging
 from helper.inference import sample_full
 
-
 def calc_acc(logits, labels):
     if labels.dim() == 1:
         _, indices = torch.max(logits, dim=1)
@@ -279,7 +278,7 @@ def precompute(graph, node_dict, boundary, recv_shape, args):
         raise Exception
 
 
-def create_model(layer_size,mu, args,random_init_fs=True):
+def create_model(layer_size,mu, args):
     """
         在CPU上创建模型
     """  
@@ -311,14 +310,24 @@ def create_model(layer_size,mu, args,random_init_fs=True):
         # pretrain为false，fs为false，表示使用gcn_first，但model中没有fs层true
         if args.pretrain == True and args.fs == False:
             raise ValueError
+        elif args.sampling_method  == "layer_importance_sampling" and args.pretrain == True and args.fs == True:
+            if args.fs_init_method=="gini":
+                path = join('gini',f"{args.dataset}_gini_impurity.pth")
+                weights = torch.load(path)
+            elif args.fs_init_method=="random":
+                weights = None
+            else:
+                raise ValueError
         else:
-            return GCN_first(
-                layer_size=layer_size,
-                dropout=args.dropout,
-                weights=None,
-                fs=args.fs,
-                pretrain=args.pretrain,
-            )
+            weights = None
+            
+        return GCN_first(
+            layer_size=layer_size,
+            dropout=args.dropout,
+            weights=weights,
+            fs=args.fs,
+            pretrain=args.pretrain,
+        )
     else:
         raise NotImplementedError
 
@@ -505,7 +514,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
         tmp_logger = logging.getLogger(f"[{rank}] model init")
         if rank == 0:
             # 对于rank 0即实际完成初始化的worker，random_init_fs为args值
-            model = create_model(copy.deepcopy(layer_size), mu, args, random_init_fs=True)    
+            model = create_model(copy.deepcopy(layer_size), mu, args)    
             model.cuda()
             # TODO: 模型分发, rank 0负责将初始化模型发送给其它rank
             # DONE: 模型分发
@@ -515,7 +524,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
         else:
             # 对于rank 不为0的worker，random_init_fs恒为True
             # 以免在初始化时使用全图train来初始化fs
-            model = create_model(copy.deepcopy(layer_size), mu, args, random_init_fs=True)   
+            model = create_model(copy.deepcopy(layer_size), mu, args)   
             model.cuda()
             # TODO: 接收模型参数
             # DONE: 接收模型参数
@@ -1022,7 +1031,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
                 # torch.Tensor默认不支持深度拷贝，所以选择state_dict来拷贝
                 # model_copy = copy.deepcopy(model)
                 # copy只能在主线程里面进行
-                model_copy  = create_model(copy.deepcopy(layer_size),mu, args, random_init_fs=True)
+                model_copy  = create_model(copy.deepcopy(layer_size),mu, args)
                 model_copy.cuda()
                 model_copy.load_state_dict(model.state_dict())
 
