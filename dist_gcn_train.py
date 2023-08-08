@@ -1180,8 +1180,8 @@ def single_run(args):
     logger = logging.getLogger(f"[single]")
     
     # 加载全图
-    full_g, n_feat, n_class = load_data(args.dataset)
-    full_g = full_g.to(torch.device('cuda'))
+    full_g, _, _ = load_data(args.dataset)
+    full_g = full_g.to(torch.device(f'cuda:{args.cuda_id}'))
     full_g_adj_matrix = get_adj_matrix_from_graph(full_g)
     # full_g_adj_matrix = full_g_adj_matrix.to(matrix_value_type).to_dense().t()
     full_g_adj_matrix = full_g_adj_matrix.to(matrix_value_type)
@@ -1189,13 +1189,15 @@ def single_run(args):
     feat, labels = full_g.ndata['feat'], full_g.ndata['label']
     train_mask, test_mask, val_mask = full_g.ndata['train_mask'], full_g.ndata['test_mask'], full_g.ndata['val_mask']
     print(train_mask.sum(), test_mask.sum(), val_mask.sum())
+
+    del full_g
     
     # 加载模型
     layer_size = get_layer_size(args)
     logger.info(f"layer_size: {layer_size}")
     gnn_layer_num = get_gnn_layer_num(layer_size,args)
     model = create_model(copy.deepcopy(layer_size), None, args)
-    model.cuda()
+    model.cuda(args.cuda_id)
 
     # 邻接矩阵
     adjs, previous_indices = sample_full(full_g_adj_matrix, gnn_layer_num, args.sampling_method)
@@ -1268,12 +1270,7 @@ def single_run(args):
         optimizer.zero_grad(set_to_none=True)
         # OPT3: calculate the gradients but aggregate the gradients periodically by reduce_hook and optimizer.state['step']
         # reduce_hook will aggregate the gradients of the same parameter on different processes
-        torch.cuda.synchronize()
-        start = time.time()
         loss.backward()
-        torch.cuda.synchronize()
-        end = time.time()
-
         optimizer.step()
 
         train_acc = calc_acc(logits[train_mask], labels[train_mask])
