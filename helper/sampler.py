@@ -113,7 +113,10 @@ def layer_wise_sampling(A:torch.Tensor,previous_nodes:List[int],sample_num:int):
     '''
     s_num = min(A.shape[0], sample_num)
     sampled_nodes = torch.randperm(A.shape[0])[:s_num].sort().values
-    adj = A[previous_nodes, :][:, sampled_nodes]
+    if A.layout is torch.sparse_coo:
+        adj = A.index_select(0, torch.tensor(previous_nodes)).index_select(1, sampled_nodes)
+    else:
+        adj = A[previous_nodes, :][:, sampled_nodes]
     adj = row_normalize(adj)
 
     # previous_index = torch.where(torch.isin(sampled_nodes, torch.tensor(previous_nodes)))[0]
@@ -134,13 +137,24 @@ def layer_importance_sampling(A:torch.Tensor, previous_nodes:List[int], sample_n
     '''
     lap = normalize(A)
     lap_sq = torch.mul(lap, lap)
-    pi = torch.sum(lap_sq[previous_nodes, :], dim=0)
-    p = pi / torch.sum(pi)
-    s_num = min(A.shape[0], sample_num)
-    sampled_nodes = torch.multinomial(p, s_num, replacement=False)
-    sampled_nodes = torch.sort(sampled_nodes)[0]
-    adj = lap[previous_nodes, :][:, sampled_nodes]
-    adj = torch.mul(adj, 1/p[sampled_nodes])
+    if A.layout is torch.sparse_coo:
+        lap_sq = lap_sq.index_select(0, torch.tensor(previous_nodes))
+        pi = torch.sparse.sum(lap_sq, dim=0).to_dense()
+        p = pi / torch.sum(pi)
+        s_num = min(A.shape[0], sample_num)
+        sampled_nodes = torch.multinomial(p, s_num, replacement=False)
+        sampled_nodes = torch.sort(sampled_nodes)[0]
+        adj = lap.index_select(0, torch.tensor(previous_nodes)).index_select(1, sampled_nodes)
+        adj = adj.coalesce()
+        adj = torch.sparse.FloatTensor(adj.indices(), adj.values() / p[sampled_nodes[adj.indices()[1]]], adj.size())
+    else:
+        pi = torch.sum(lap_sq[previous_nodes, :], dim=0)
+        p = pi / torch.sum(pi)
+        s_num = min(A.shape[0], sample_num)
+        sampled_nodes = torch.multinomial(p, s_num, replacement=False)
+        sampled_nodes = torch.sort(sampled_nodes)[0]
+        adj = lap[previous_nodes, :][:, sampled_nodes]
+        adj = torch.mul(adj, 1/p[sampled_nodes])
     adj = row_normalize(adj)
 
     return adj, sampled_nodes
