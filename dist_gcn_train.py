@@ -634,7 +634,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
         f"dataset={args.dataset}",
         f"model={args.model},sampling_method={args.sampling_method},pretrain={args.pretrain},fs={args.fs},fs_init_method={args.fs_init_method}",
         f"tag={tag}",
-        f"layer_size={layer_size} lr={args.lr} period={args.log_every}",
+        f"layer_size={layer_size},lr={args.lr},fsratio={args.fsratio},period={args.log_every}",
         f"partition={args.n_partitions}",
         now_str()
     )
@@ -1230,7 +1230,7 @@ def single_run(args):
         f"dataset={args.dataset}",
         f"model={args.model},sampling_method={args.sampling_method},pretrain={args.pretrain},fs={args.fs},fs_init_method={args.fs_init_method}",
         f"tag={tag}",
-        f"layer_size={layer_size} lr={args.lr} period={args.log_every}",
+        f"layer_size={layer_size},lr={args.lr},fsratio={args.fsratio},period={args.log_every}",
         f"partition={args.n_partitions}",
         now_str()
     )
