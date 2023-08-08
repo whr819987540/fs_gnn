@@ -32,8 +32,11 @@ class GraphConvolution(nn.Module):
         self.n_out = n_out
         self.linear = nn.Linear(n_in, n_out)
         self.reset_parameters()
-        self.logger = logging.getLogger(f'[{dist.get_rank()}]')
-
+        try:
+            self.logger = logging.getLogger(f'[{dist.get_rank()}]')
+        except:
+            self.logger = logging.getLogger(f'[single]')
+            
     def forward(self, x: torch.Tensor, adj: torch.Tensor):
         # torch.spmm(sparse/dense, dense)
         shape = x.shape
