@@ -851,7 +851,6 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
                 adj, sampled_nodes = layer_importance_sampling(adj_matrix, merged_nodes_mapper.globalid_to_index(previous_nodes), args.sample_num)
             else:
                 raise ValueError
-            # if merged_nodes_mapper.index_to_globalid(sampled_nodes).shape[0] != 
 
             layer_logger.debug(
                 f"""
@@ -863,7 +862,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
                     adj_matrix.shape {adj_matrix.shape}, 
                     sampled_nodes.shape {sampled_nodes.shape}
                 """
-                )
+            )
 
             # index => global id
             previous_nodes=merged_nodes_mapper.index_to_globalid(sampled_nodes)
