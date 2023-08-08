@@ -1183,8 +1183,8 @@ def single_run(args):
     full_g, n_feat, n_class = load_data(args.dataset)
     full_g = full_g.to(torch.device('cuda'))
     full_g_adj_matrix = get_adj_matrix_from_graph(full_g)
-    full_g_adj_matrix = full_g_adj_matrix.to(matrix_value_type).to_dense().t()
-    # full_g_adj_matrix = full_g_adj_matrix.to(matrix_value_type)
+    # full_g_adj_matrix = full_g_adj_matrix.to(matrix_value_type).to_dense().t()
+    full_g_adj_matrix = full_g_adj_matrix.to(matrix_value_type)
 
     feat, labels = full_g.ndata['feat'], full_g.ndata['label']
     train_mask, test_mask, val_mask = full_g.ndata['train_mask'], full_g.ndata['test_mask'], full_g.ndata['val_mask']
