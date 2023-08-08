@@ -47,7 +47,9 @@ if __name__ == '__main__':
     # divide the graph
     # 1. the main process load the dataset, divive the graph and save the partition
     # 2. different process load corresponding partition by its process rank
-    if args.skip_partition:
+    # don't divide the graph if it's specified,
+    # or the sampling method is full graph sampling which means the model is trained on the full graph
+    if args.skip_partition or args.sampling_method=="full_graph_sampling":
         if args.n_feat == 0 or args.n_class == 0 or args.n_train == 0:
             warnings.warn('Specifying `--n-feat`, `--n-class` and `--n-train` saves data loading time.')
             g, n_feat, n_class = load_data(args.dataset)
