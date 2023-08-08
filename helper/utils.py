@@ -778,6 +778,7 @@ def init_logging(args,log_id:str,rank=-1):
     # message: 用户输出的消息(传入logger的参数)
     log_format = f'%(asctime)s %(name)s "%(pathname)s", line %(lineno)d, %(levelname)s: %(message)s\n'
     choices = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
+    os.makedirs('./results',exist_ok=True)
     logging.basicConfig(
         level=(choices.index(args.log_level)+1)*10, format=log_format, 
         datefmt='%Y-%m-%d %H:%M:%S',
