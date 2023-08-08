@@ -397,8 +397,9 @@ def get_adj_matrix_from_graph(g):
             indices=adj.indices(),
             values=adj.val,
             size=adj.shape
-        )
-    return adj_tensor
+    )
+    # 将sparse matrix转化为最紧凑的形式
+    return adj_tensor.coalesce()
 
 
 def get_all_partition_detail_and_globalid_index_mapper_manager(num_nodes:int, size:int, args):
@@ -533,7 +534,7 @@ class Swapper:
                     # index
                     nodes = self.globalid_index_mapper.globalid_to_index(nodes)
                     # send adj line to certain rank
-                    dist.send(self.adj_matrix[nodes,:],dst=work,tag=self.AdjLineTag)
+                    dist.send(self.adj_matrix.index_select(0,nodes).to_dense(),dst=work,tag=self.AdjLineTag)
                     self.logger.debug(f"send adj lines, {nodes} {nodes.shape}")
                 except Exception as e:
                     self.logger.error(f"listener send adjline exception {e}",stack_info=True)
@@ -581,14 +582,14 @@ class Swapper:
                 nodes = self.globalid_index_mapper.globalid_to_index(nodes)
                 # send adj line to certain rank
                 dist.send(
-                    self.adj_matrix[nodes,:],
+                    self.adj_matrix.index_select(0,nodes).to_dense(),
                     dst=work,
                     tag=int(f"{self.ResponseTag}{self.AdjLineTag}")
                 )
             except Exception as e:
                 self.logger.error(f"adjline_listener send response exception {e}",stack_info=True)
             else:
-                self.logger.debug(f"adjline_listener send response {self.adj_matrix[nodes,:].shape} ")
+                self.logger.debug(f"adjline_listener send response {self.adj_matrix.index_select(0,nodes).shape} ")
             
 
     def get_adj_line_from_worker(self, rank, nodes:torch.Tensor):
