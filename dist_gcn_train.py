@@ -415,7 +415,8 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
         # full_g_adj_matrix 在gcn_first模型中被用到
         # 用来evaluate
         full_g_adj_matrix = get_adj_matrix_from_graph(full_g)
-        full_g_adj_matrix = full_g_adj_matrix.to(matrix_value_type).to_dense().t()
+        # full_g_adj_matrix = full_g_adj_matrix.to(matrix_value_type).to_dense().t()
+        full_g_adj_matrix = full_g_adj_matrix.to(matrix_value_type)
         
         # if args.inductive:
         #     logger.info("inductive split")
@@ -510,7 +511,10 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
     # model
     train_x = feat[train_mask]
     train_y = labels[train_mask]
-    mu = feature_importance_gini(train_x, train_y)
+    if args.model!="gcn_first":
+        mu = feature_importance_gini(train_x, train_y)
+    else:
+        mu = None
     with torch.no_grad():
         tmp_logger = logging.getLogger(f"[{rank}] model init")
         if rank == 0:
@@ -683,7 +687,9 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
     # index
     # on gpu, so move it to cpu
     inner_boundary_nodes_adj_matrix = get_adj_matrix_from_graph(graph)
-    inner_boundary_nodes_adj_matrix = inner_boundary_nodes_adj_matrix.to(matrix_value_type).to_dense().cpu().t()
+    # inner_boundary_nodes_adj_matrix = inner_boundary_nodes_adj_matrix.to(matrix_value_type).to_dense().cpu().t()
+    inner_boundary_nodes_adj_matrix = inner_boundary_nodes_adj_matrix.to(matrix_value_type).cpu().t()
+
 
     # communicate adj line with other ranks
     # TODO: 测试通信（adj_line, feature）
@@ -735,7 +741,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
                     # adj_line只是记录了某个inner node的邻居节点在邻接矩阵中的index
                     # index, shape:[1,x]
                     try:
-                        adj_line = inner_boundary_nodes_adj_matrix[index,:]
+                        adj_line = inner_boundary_nodes_adj_matrix.index_select(0,index).to_dense()
                     except:
                         layer_logger.exception(f"global id {node}, index {index}, rank {node_rank} {dist.get_rank()}")
                         raise Exception
@@ -806,8 +812,9 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
             # torch.unique(torch.isin(merged_nodes_global_id.cuda(),node_dict['_ID'][node_dict['inner_node']]))
             # tensor([False,  True], device='cuda:0')
             
-            # merged_nodes_global_id 作为行列
-            adj_matrix = torch.zeros((merged_nodes_global_id.shape[0], merged_nodes_global_id.shape[0]),dtype=matrix_value_type)
+            row_index = torch.LongTensor()
+            col_index = torch.LongTensor()
+            
             merged_nodes_mapper = GlobalidIndexMapper(merged_nodes_global_id)
 
             for item in adj_line_result:
@@ -818,13 +825,23 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
 
                 nodes_in_adj_line_global_id = mapper_manager[tmp_rank].index_to_globalid(torch.where(adj_line == 1)[1])
 
-                adj_matrix[index, merged_nodes_mapper.globalid_to_index(nodes_in_adj_line_global_id)] = 1
+                # adj_matrix[index, merged_nodes_mapper.globalid_to_index(nodes_in_adj_line_global_id)] = 1
+                nodes_in_adj_line_index = merged_nodes_mapper.globalid_to_index(nodes_in_adj_line_global_id)
+                row_index = torch.cat([row_index, index.repeat(nodes_in_adj_line_index.shape[0])])
+                col_index = torch.cat([col_index, nodes_in_adj_line_index])
 
+            # 将对角线置为1
+            row_index = torch.cat([row_index, torch.arange(merged_nodes_global_id.shape[0])])
+            col_index = torch.cat([col_index, torch.arange(merged_nodes_global_id.shape[0])])
+            # merged_nodes_global_id 作为行列
+            adj_matrix = torch.sparse.IntTensor (
+                indices=torch.stack([row_index, col_index]),
+                values=torch.ones(row_index.shape[0], dtype=matrix_value_type),
+                size=torch.Size((merged_nodes_global_id.shape[0],merged_nodes_global_id.shape[0]))
+            ).coalesce()
+            
             adj_matrix_clone = adj_matrix.clone()
             adj_matrix = adj_matrix_clone + adj_matrix_clone.T
-            # 将对角线置为1
-            for i in range(adj_matrix.shape[0]):
-                adj_matrix[i,i] = 1
 
             # update previous_nodes from layer-wise sampling function
             # global id => index
