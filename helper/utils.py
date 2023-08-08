@@ -581,8 +581,10 @@ class Swapper:
                 # index
                 nodes = self.globalid_index_mapper.globalid_to_index(nodes)
                 # send adj line to certain rank
+                # TODO: 这里也可以传稀疏矩阵
+                # DONE: 传稀疏矩阵
                 dist.send(
-                    self.adj_matrix.index_select(0,nodes).to_dense(),
+                    self.adj_matrix.index_select(0,nodes),
                     dst=work,
                     tag=int(f"{self.ResponseTag}{self.AdjLineTag}")
                 )
@@ -635,6 +637,7 @@ class Swapper:
                 size=(len(nodes), self.mapper_manager[rank].globalid.shape[0]), 
                 dtype=self.matrix_value_type
             )
+            # TODO: 这里也可以传稀疏矩阵
             dist.recv(
                 adj_lines, 
                 src=rank, 
