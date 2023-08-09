@@ -729,6 +729,14 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
             swapper_tasks = [torch.tensor([], dtype=index_type) for _ in range(size)]
             adj_line_result = []
             # 将与某个worker的多次通信聚合为一次通信，for循环结束后统一处理
+
+            accumelated_time = 0
+            # TODO: 逐个操作太费时，需要转化为对tensor的操作
+            # 获取各个节点的rank
+            partition_detail = all_partition_detail[previous_nodes]
+            # 将previous_nodes按照node_rank分为rank类
+            
+            
             # global id
             for node in previous_nodes:
                 # index
@@ -741,7 +749,16 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
                     # adj_line只是记录了某个inner node的邻居节点在邻接矩阵中的index
                     # index, shape:[1,x]
                     try:
-                        adj_line = inner_boundary_nodes_adj_matrix.index_select(0,index).to_dense()
+                        # TODO: convert sparse to dense is very time consuming
+                        # 2023-08-09 15:50:27 [0,0,1] "/root/fs_gnn/dist_gcn_train.py", line 765, DEBUG: local adj line sparse to dense using time: 134.02674007415771
+                        # previous nodes number is less than 512
+                        start = time.time()
+                        # adj_line = inner_boundary_nodes_adj_matrix.index_select(0,index).to_dense()
+                        # DONE: sparse matrix
+                        adj_line = inner_boundary_nodes_adj_matrix.index_select(0,index).coalesce()
+                        end = time.time()
+                        
+                        accumelated_time += end-start
                     except:
                         layer_logger.exception(f"global id {node}, index {index}, rank {node_rank} {dist.get_rank()}")
                         raise Exception
@@ -758,6 +775,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
                     # print("neighbor node in other workers")
 
             layer_logger.debug(f"swapper_tasks: {swapper_tasks}")
+            layer_logger.debug(f"local adj line sparse to dense using time: {accumelated_time}")
 
             # collect the adj_line from other workers through communication
             # 如果是异步执行，可以避免同步执行时与某个rank的通信时间过长而阻碍其它通信
@@ -778,11 +796,13 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
                     layer_logger.debug(f"[{rank}] send to [{i}]: {swapper_tasks[i]}")
                     res = swapper.get_adj_line_from_worker(i,swapper_tasks[i])
                     adj_line_result.extend(res)
-                    layer_logger.debug(f"adj lines from {i}: {res}")
+                    # 原始数据太长，只打印一部分
+                    layer_logger.debug(f"adj lines from {i}: {res[:5]}")
 
-            layer_logger.debug(f"adj lines {adj_line_result}")
+            # 原始数据太长，不记录
+            # layer_logger.debug(f"adj lines {adj_line_result}")
+            layer_logger.debug(f"adj lines {len(adj_line_result)}")
 
-            
             # adj_line 中为1元素的index => global id
             # >>> a=torch.Tensor([1,2,3,4,5,1,2,3])
             # >>> a
@@ -794,17 +814,27 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
             # >>> b=torch.Tensor([11,12,13,14,15,16,17,18])
             # >>> b[torch.where(a == 1)[0]]
             # tensor([11., 16.])
+            start = time.time()
             merged_nodes_global_id = torch.tensor([],dtype=index_type)
             for item in adj_line_result:
                 node = item["node"]
                 adj_line = item["adj_line"]
                 tmp_rank = item["rank"]
 
-                nodes_in_adj_line_global_id = mapper_manager[tmp_rank].index_to_globalid(torch.where(adj_line == 1)[1])
+                # TODO: use sparse matrix
+                # nodes_in_adj_line_global_id = mapper_manager[tmp_rank].index_to_globalid(torch.where(adj_line == 1)[1])
+                # 当adjline是sparese_matrix时, values是1，均为非0值，自动完成比较
+                # DONE: use sparse matrix
+                nodes_in_adj_line_global_id = mapper_manager[tmp_rank].index_to_globalid(adj_line.indices()[1])
                 merged_nodes_global_id = torch.cat([merged_nodes_global_id, nodes_in_adj_line_global_id])
-                
+            end = time.time()
+            layer_logger.debug(f"get nodes to be merged using time: {end-start}")
+
+            start = time.time()
             merged_nodes_global_id = torch.unique(merged_nodes_global_id)
-            layer_logger.debug(f"merged_nodes_global_id.shape {merged_nodes_global_id.shape}")
+            end = time.time()
+            layer_logger.debug(f"merged_nodes_global_id.shape {merged_nodes_global_id.shape}, using time:{end-start}")
+            
             # previous nodes肯定在备选的merged_nodes_global_id里面
             # torch.unique(torch.isin(previous_nodes,merged_nodes_global_id))
             # tensor([True])
@@ -812,6 +842,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
             # torch.unique(torch.isin(merged_nodes_global_id.cuda(),node_dict['_ID'][node_dict['inner_node']]))
             # tensor([False,  True], device='cuda:0')
             
+            start = time.time()
             row_index = torch.LongTensor()
             col_index = torch.LongTensor()
             
@@ -822,9 +853,13 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
                 index = merged_nodes_mapper.globalid_to_index(node.unsqueeze(0)) # index
                 adj_line = item["adj_line"]
                 tmp_rank = item["rank"]
-
-                nodes_in_adj_line_global_id = mapper_manager[tmp_rank].index_to_globalid(torch.where(adj_line == 1)[1])
-
+                
+                # TODO: use sparse matrix
+                # nodes_in_adj_line_global_id = mapper_manager[tmp_rank].index_to_globalid(torch.where(adj_line == 1)[1])
+                # 当adjline是sparese_matrix时, values是1，均为非0值，自动完成比较
+                # DONE: use sparse matrix
+                nodes_in_adj_line_global_id = mapper_manager[tmp_rank].index_to_globalid(adj_line.indices()[1])
+                
                 # adj_matrix[index, merged_nodes_mapper.globalid_to_index(nodes_in_adj_line_global_id)] = 1
                 nodes_in_adj_line_index = merged_nodes_mapper.globalid_to_index(nodes_in_adj_line_global_id)
                 row_index = torch.cat([row_index, index.repeat(nodes_in_adj_line_index.shape[0])])
@@ -834,7 +869,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
             row_index = torch.cat([row_index, torch.arange(merged_nodes_global_id.shape[0])])
             col_index = torch.cat([col_index, torch.arange(merged_nodes_global_id.shape[0])])
             # merged_nodes_global_id 作为行列
-            adj_matrix = torch.sparse.IntTensor (
+            adj_matrix = torch.sparse.IntTensor(
                 indices=torch.stack([row_index, col_index]),
                 values=torch.ones(row_index.shape[0], dtype=matrix_value_type),
                 size=torch.Size((merged_nodes_global_id.shape[0],merged_nodes_global_id.shape[0]))
@@ -842,6 +877,8 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
             
             adj_matrix_clone = adj_matrix.clone()
             adj_matrix = adj_matrix_clone + adj_matrix_clone.T
+            end = time.time()
+            layer_logger.debug(f"construct adj matrix using time: {end-start}")
 
             # update previous_nodes from layer-wise sampling function
             # global id => index
@@ -867,8 +904,11 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail, mapper_manager
             # index => global id
             previous_nodes=merged_nodes_mapper.index_to_globalid(sampled_nodes)
             # adj与feature一起运算，放到GPU里面
+            start = time.time()
             adjs[layer] = adj.cuda()
-
+            end = time.time()
+            layer_logger.debug(f"adjs[layer].cuda() using time: {end-start}")
+            
         # glolbal id
         input_nodes = previous_nodes
         # input_nodes的feature可能在别的worker上

@@ -1,0 +1,36 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Current File",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--model","gcn_first",
+                "--dataset","reddit",
+                "--n_partitions","3",
+                "--lr","1e-2",
+                "--dropout","0.5",
+                "--sigma","1.0",
+                "--fsratio","0.5",
+                "--n-layers","4",
+                "--n-hidden","256",
+                "--port", "18118",
+                "--log-every","1",
+                "--n-epochs", "100",
+                "--eval",
+                "--fix_seed",
+                "--sampling-method", "layer_importance_sampling",
+                "--fs",
+                "--fs-init-method", "random",
+                "--pretrain",
+            ]
+        }
+    ]
+}
