@@ -1,8 +1,5 @@
-from scipy.stats import norm
 import torch
 from torch import nn
-import numpy as np
-import torch.distributions as dist
 
 
 def loss_func(results, labels, lamda, sigma, model,fs:bool, args):
@@ -11,19 +8,19 @@ def loss_func(results, labels, lamda, sigma, model,fs:bool, args):
     else:
         loss_gcn = torch.nn.CrossEntropyLoss(reduction='sum')
 
-    if fs:
-        loss_new = 0
-        # 创建正态分布对象
-        normal_dist = dist.Normal(0, 1)
+    # if fs:
+    #     loss_new = 0
+    #     # 创建正态分布对象
+    #     normal_dist = dist.Normal(0, 1)
 
-        for mu_i in list(model.parameters())[0]:  # 获取新加层的参数
-            loss_new += normal_dist.cdf(mu_i / sigma)
+    #     for mu_i in list(model.parameters())[0]:  # 获取新加层的参数
+    #         loss_new += normal_dist.cdf(mu_i / sigma)
 
-        loss_fs = lamda * loss_new
-    else:
-        loss_fs = 0
+    #     loss_fs = lamda * loss_new
+    # else:
+    #     loss_fs = 0
     
-    return loss_gcn(results, labels) + loss_fs
+    return loss_gcn(results, labels)
 
 
 class FSLayer(nn.Module):
