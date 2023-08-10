@@ -72,7 +72,7 @@ def normalize(adj):
     return adj_normalized
 
 # 节点采样
-def node_wise_sampling(A:torch.Tensor, previous_nodes:List[int], sample_num:int):
+def node_wise_sampling(A:torch.Tensor, previous_nodes:torch.Tensor, sample_num:int):
     """
     A:torch.Tesor, 所有待选邻居节点（一个节点的所有邻居节点是包括它自己本身的）的邻接矩阵,
     行列数一样,对角线上都是1,即自己和自己连接
@@ -100,7 +100,7 @@ def node_wise_sampling(A:torch.Tensor, previous_nodes:List[int], sample_num:int)
     return adj, sampled_nodes, previous_index
 
 # 层采样
-def layer_wise_sampling(A:torch.Tensor,previous_nodes:List[int],sample_num:int):
+def layer_wise_sampling(A:torch.Tensor,previous_nodes:torch.Tensor,sample_num:int):
     '''
         A:torch.Tesor, 所有待选邻居节点（一个节点的所有邻居节点是包括它自己本身的）的邻接矩阵,
         行列数一样,对角线上都是1,即自己和自己连接
@@ -114,7 +114,7 @@ def layer_wise_sampling(A:torch.Tensor,previous_nodes:List[int],sample_num:int):
     s_num = min(A.shape[0], sample_num)
     sampled_nodes = torch.randperm(A.shape[0])[:s_num].sort().values
     if A.layout is torch.sparse_coo:
-        adj = A.index_select(0, torch.tensor(previous_nodes)).index_select(1, sampled_nodes)
+        adj = A.index_select(0, previous_nodes).index_select(1, sampled_nodes)
     else:
         adj = A[previous_nodes, :][:, sampled_nodes]
     adj = row_normalize(adj)
@@ -124,7 +124,7 @@ def layer_wise_sampling(A:torch.Tensor,previous_nodes:List[int],sample_num:int):
     return adj, sampled_nodes
 
 # 层重要性采样
-def layer_importance_sampling(A:torch.Tensor, previous_nodes:List[int], sample_num:int):
+def layer_importance_sampling(A:torch.Tensor, previous_nodes:torch.Tensor, sample_num:int):
     '''
     A:torch.Tesor, 所有待选邻居节点（一个节点的所有邻居节点是包括它自己本身的）的邻接矩阵,
     行列数一样,对角线上都是1,即自己和自己连接
@@ -138,13 +138,13 @@ def layer_importance_sampling(A:torch.Tensor, previous_nodes:List[int], sample_n
     lap = normalize(A)
     lap_sq = torch.mul(lap, lap)
     if A.layout is torch.sparse_coo:
-        lap_sq = lap_sq.index_select(0, torch.tensor(previous_nodes))
+        lap_sq = lap_sq.index_select(0, previous_nodes)
         pi = torch.sparse.sum(lap_sq, dim=0).to_dense()
         p = pi / torch.sum(pi)
         s_num = min(A.shape[0], sample_num)
         sampled_nodes = torch.multinomial(p, s_num, replacement=False)
         sampled_nodes = torch.sort(sampled_nodes)[0]
-        adj = lap.index_select(0, torch.tensor(previous_nodes)).index_select(1, sampled_nodes)
+        adj = lap.index_select(0, previous_nodes).index_select(1, sampled_nodes)
         adj = adj.coalesce()
         adj = torch.sparse.FloatTensor(adj.indices(), adj.values() / p[sampled_nodes[adj.indices()[1]]], adj.size())
     else:
