@@ -408,7 +408,7 @@ def get_all_partition_detail_and_globalid_index_mapper_manager(num_nodes:int, si
         2) get globalid by index of the matrix on certain rank, or get index of the matrix on certain rank by globalid 
     """
     # 建立node globalid到partition id的映射
-    all_partition_detail = [None]*num_nodes
+    all_partition_detail = torch.zeros(num_nodes,dtype=torch.int64) # same type as node_dict['_ID'] and node_dict['part_id']
     # 建立globalid到index的映射
     mapper_manager = GlobalidIndexMapperManager()
 
@@ -423,8 +423,9 @@ def get_all_partition_detail_and_globalid_index_mapper_manager(num_nodes:int, si
         # node_dict['_ID'].shape
         # torch.Size([10934])
     
-        for i,j in zip(node_dict['_ID'], node_dict['part_id']):
-            all_partition_detail[i.item()] = j.item()
+        # for i,j in zip(node_dict['_ID'], node_dict['part_id']):
+        #     all_partition_detail[i.item()] = j.item()
+        all_partition_detail[node_dict['_ID']] = node_dict['part_id']
 
     return all_partition_detail, mapper_manager
 
@@ -581,10 +582,12 @@ class Swapper:
                 # index
                 nodes = self.globalid_index_mapper.globalid_to_index(nodes)
                 # send adj line to certain rank
-                # TODO: 这里也可以传稀疏矩阵
-                # DONE: 传稀疏矩阵
+                start = time.time()
+                data = self.adj_matrix.index_select(0,nodes).to_dense()
+                end = time.time()
+                self.logger.debug(f"sparse to dense time: {end-start}")
                 dist.send(
-                    self.adj_matrix.index_select(0,nodes),
+                    data,
                     dst=work,
                     tag=int(f"{self.ResponseTag}{self.AdjLineTag}")
                 )
@@ -627,7 +630,7 @@ class Swapper:
                 tag=int(f"{self.RequesetTag}{self.AdjLineTag}")
             )
         except Exception as e:
-            self.logger.exception(f"get_adj_line_from_worker send request exception {e}",stack_info=True)
+            self.logger.exception(f"get_adj_line_from_worker send request exception {e}, {nodes} {nodes.shape}",stack_info=True)
         else:
             self.logger.debug(f"get_adj_line_from_worker send request, {nodes} {nodes.shape}")
 
@@ -637,7 +640,6 @@ class Swapper:
                 size=(len(nodes), self.mapper_manager[rank].globalid.shape[0]), 
                 dtype=self.matrix_value_type
             )
-            # TODO: 这里也可以传稀疏矩阵
             dist.recv(
                 adj_lines, 
                 src=rank, 
@@ -648,13 +650,23 @@ class Swapper:
         else:
             self.logger.debug(f"get_adj_line_from_worker recv response {adj_lines.shape} ")
 
-        tmp = []
-        for i in range(len(nodes)):
-            tmp.append({
-                "node":nodes[i],
-                "adj_line":adj_lines[i,:].unsqueeze(0),
-                "rank":rank,
-            })
+        # tmp = []
+        # for i in range(len(nodes)):
+        #     tmp.append({
+        #         "node":nodes[i],
+        #         # dense matrix
+        #         # "adj_line":adj_lines[i,:].unsqueeze(0),
+        #         # dense matrix to sparse matrix
+        #         "adj_line":dense_matrix_to_sparse_matrix(adj_lines[i,:].unsqueeze(0)),
+        #         # dense matrix to sparse matrix
+        #         # "adj_line":adj_lines.index_select(0,torch.LongTensor([i])).coalesce(),
+        #         "rank":rank,
+        #     })
+        tmp = {
+            "nodes":nodes,
+            "adj_lines":dense_matrix_to_sparse_matrix(adj_lines),
+            "rank":rank,
+        }
         return tmp
 
     def feature_listener(self):
@@ -685,6 +697,7 @@ class Swapper:
                 self.logger.debug(f"feature_listener recv request {nodes} {nodes.shape}")
 
                 self.feature_communication_volume += get_tensor_bytes_size(nodes)
+                
             try:
                 # index
                 nodes = self.globalid_index_mapper_in_feature.globalid_to_index(nodes.cuda())
@@ -842,3 +855,16 @@ def get_gnn_layer_num(layer_size:List[int],args)->int:
         gnn_layer_num -= 1
 
     return gnn_layer_num
+
+def dense_matrix_to_sparse_matrix(dense:torch.Tensor):
+    non_zero_idx = dense.nonzero()
+    rows = non_zero_idx[:, 0].tolist()
+    cols = non_zero_idx[:, 1].tolist()
+    values = dense[rows, cols]
+
+    sparse = torch.sparse.IntTensor(
+        indices=torch.LongTensor([rows, cols]),
+        values=values,
+    )
+
+    return sparse.coalesce()
