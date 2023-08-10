@@ -714,10 +714,8 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail:torch.Tensor, m
         # adj of each layer
         adjs = [None for _ in range(gnn_layer_num)]
 
-        # global id
+        # global id, GPU
         batch = get_sampled_batch_from_inner_nodes(inner_nodes, node_dict['train_mask'], args) # L-1(output)
-        # on gpu, so move it to cpu
-        batch = batch.cpu()
         batch_index = mapper_manager[rank].globalid_to_index(batch)
         # global id
         previous_nodes = batch # L-j层的上一层是L-j+1层
@@ -749,7 +747,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail:torch.Tensor, m
                     group_nodes_index_in_adj_matrix = mapper_manager[group_rank].globalid_to_index(group_nodes_global_id)
                     tmp = {
                         "nodes":group_nodes_global_id,
-                        "adj_lines":inner_boundary_nodes_adj_matrix.index_select(0,group_nodes_index_in_adj_matrix).coalesce(),
+                        "adj_lines":inner_boundary_nodes_adj_matrix.index_select(0,group_nodes_index_in_adj_matrix.cpu()).coalesce().cuda(),
                         "rank":group_rank,
                         "mapper":GlobalidIndexMapper(group_nodes_global_id),
                     }
@@ -757,6 +755,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail:torch.Tensor, m
                 else:
                     # 将与某个worker的多次通信聚合为一次通信
                     res = swapper.get_adj_line_from_worker(group_rank,group_nodes_global_id)
+                    res['adj_lines'] = res['adj_lines'].cuda()
                     res['mapper'] = GlobalidIndexMapper(group_nodes_global_id)
                     adj_line_result.append(res)
             # # global id
@@ -839,7 +838,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail:torch.Tensor, m
             # >>> b[torch.where(a == 1)[0]]
             # tensor([11., 16.])
             start = time.time()
-            merged_nodes_global_id = torch.tensor([],dtype=index_type)
+            merged_nodes_global_id = torch.tensor([],dtype=index_type).cuda()
             for item in adj_line_result:
                 # adj_line = item["adj_line"]
                 # tmp_rank = item["rank"]
@@ -868,8 +867,6 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail:torch.Tensor, m
             merged_nodes_global_id = torch.unique(merged_nodes_global_id)
             end = time.time()
             layer_logger.debug(f"merged_nodes_global_id.shape {merged_nodes_global_id.shape}, using time:{end-start}")
-            if layer == 1:
-                print("here")
             
             # previous nodes肯定在备选的merged_nodes_global_id里面
             # torch.unique(torch.isin(previous_nodes,merged_nodes_global_id))
@@ -879,8 +876,8 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail:torch.Tensor, m
             # tensor([False,  True], device='cuda:0')
             
             start = time.time()
-            row_index = torch.LongTensor()
-            col_index = torch.LongTensor()
+            row_index = torch.LongTensor().cuda()
+            col_index = torch.LongTensor().cuda()
             
             merged_nodes_mapper = GlobalidIndexMapper(merged_nodes_global_id)
 
@@ -922,14 +919,14 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail:torch.Tensor, m
             
             
             # 将对角线置为1
-            row_index = torch.cat([row_index, torch.arange(merged_nodes_global_id.shape[0])])
-            col_index = torch.cat([col_index, torch.arange(merged_nodes_global_id.shape[0])])
+            row_index = torch.cat([row_index, torch.arange(merged_nodes_global_id.shape[0]).cuda()])
+            col_index = torch.cat([col_index, torch.arange(merged_nodes_global_id.shape[0]).cuda()])
             # merged_nodes_global_id 作为行列
             adj_matrix = torch.sparse.IntTensor(
                 indices=torch.stack([row_index, col_index]),
-                values=torch.ones(row_index.shape[0], dtype=matrix_value_type),
-                size=torch.Size((merged_nodes_global_id.shape[0],merged_nodes_global_id.shape[0]))
-            ).coalesce()
+                values=torch.ones(row_index.shape[0], dtype=matrix_value_type).cuda(),
+                size=torch.Size((merged_nodes_global_id.shape[0],merged_nodes_global_id.shape[0])),
+            ).coalesce().cuda()
             
             adj_matrix_clone = adj_matrix.clone()
             adj_matrix = adj_matrix_clone + adj_matrix_clone.T
@@ -963,10 +960,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail:torch.Tensor, m
             # index => global id
             previous_nodes=merged_nodes_mapper.index_to_globalid(sampled_nodes)
             # adj与feature一起运算，放到GPU里面
-            start = time.time()
-            adjs[layer] = adj.cuda()
-            end = time.time()
-            layer_logger.debug(f"adjs[layer].cuda() using time: {end-start}")
+            adjs[layer] = adj
             
         # glolbal id
         input_nodes = previous_nodes
@@ -1446,4 +1440,10 @@ def init_processes(rank, size, queue, args, all_partition_detail, mapper_manager
     check_parser(args)
     # load the partition which has been saved on the disk
     g, node_dict, gpb = load_partition(args, rank)
+    # move from cpu to gpu
+    # 对于主进程GPU是某一个，但子线程的GPU一般是另一个，所以主进程的数据放cpu作为公用数据
+    # 子进程将数据移到自己的GPU
+    all_partition_detail = all_partition_detail.cuda()
+    for index in range(len(mapper_manager.manager)):
+        mapper_manager[index].globalid = mapper_manager[index].globalid.cuda()
     run(g, node_dict, gpb, queue, args, all_partition_detail, mapper_manager, all_feat)
