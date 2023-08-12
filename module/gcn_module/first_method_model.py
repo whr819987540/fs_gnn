@@ -5,6 +5,64 @@ from module.graphsage_layer import GraphSageConvolution
 from module.graphsage_layer import GraphConvolution
 from typing import List
 from time import time
+from dgl.nn import SAGEConv
+import torch.nn.functional as F
+
+class Model(nn.Module):
+    def __init__(self, layer_size:List[int], dropout, weights:torch.Tensor, fs : bool = False, pretrain : bool = True):
+        '''
+        :param layers_size, [feature, feature(optional if fs), hidden*layer, label]
+        这里跟之前的不一样了,之前的最后一层是线性层,节点不变,而这里最后一层跟前面的层一样,是进行了采样的,节点变了
+        举例(两层,没有fs层的情况):[feature, hidden size, label],如果按照以前的，就应该是[feature, hidden size, hidden size, label]
+        :param dropout: dropout比例
+        
+        :param fs: 默认为False, 即不加FS层
+        :param pretrain: 默认为True, 即使用第一种预训练的方式, 否则, 是用第二种全程online的方法
+        :param weights: FS层参数的初始值, weights为None, 表示用随机值进行初始化; weights不为None, 表示用continous_feature_importance_gini函数初始化
+        '''
+        super(Model, self).__init__()
+        self.fs = fs
+        self.pretrain = pretrain
+
+        self.fs_run_time = 0 # fs层的运行时间
+        self.normal_run_time = 0 # 非fs层的运行时间
+
+        self.fs_layer = None
+        # 当model为gcn_first时，只有在pretrain为true，fs为true时，才会有fs层
+        if self.pretrain == True and self.fs == True:
+            self.fs_layer = FSLayer(layer_size[0], weights, pretrain)
+            layer_size.pop(0)
+
+        self.gcs = nn.ModuleList()
+        for i in range(len(layer_size) - 1):
+            self.gcs.append(SAGEConv(layer_size[i], layer_size[i+1], aggregator_type="mean"))
+
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(dropout)
+
+    def get_fs_params(self):
+        """
+            获取fs层的参数
+        """
+        if self.fs:
+            return self.fs_layer.weights
+        else:
+            return None
+
+    def forward(self, mfgs, x):
+        '''
+        '''
+        # 当model为gcn_first时，只有在pretrain为true，fs为true时，才会有fs层
+        if self.pretrain == True and self.fs == True:
+            x = self.fs_layer(x) # fs层
+            x = self.dropout(x)
+
+        for ell in range(len(self.gcs)):
+            x_dst = x[: mfgs[ell].num_dst_nodes()]
+            x = self.gcs[ell](mfgs[ell], (x, x_dst))
+            x = F.relu(x)
+
+        return x
 
 class Graphsage_first(nn.Module):
     def __init__(self, nfeat, nhid, num_classes, layers, dropout, weights:torch.Tensor,
