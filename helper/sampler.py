@@ -112,7 +112,7 @@ def layer_wise_sampling(A:torch.Tensor,previous_nodes:torch.Tensor,sample_num:in
         sampled_nodes(torch.Tensor): 用于下一层采样,对应A中的index,不是global id
     '''
     s_num = min(A.shape[0], sample_num)
-    sampled_nodes = torch.randperm(A.shape[0])[:s_num].sort().values
+    sampled_nodes = torch.randperm(A.shape[0],device=previous_nodes.device)[:s_num].sort().values
     if A.layout is torch.sparse_coo:
         adj = A.index_select(0, previous_nodes).index_select(1, sampled_nodes)
     else:
