@@ -95,7 +95,7 @@ def run(proc_id, devices, args, log_id, graph, train_nids, valid_nids, test_nids
     elif args.dataset == "ogbn-arxiv":
         fanouts = [4,4,4] 
     elif args.dataset == "reddit":
-        fanouts = [15,15,15,15] # fixed
+        fanouts = [15,15,15] # fixed
     sampler = dgl.dataloading.NeighborSampler(fanouts)
     logger.debug(f"sampler {fanouts}")
 
