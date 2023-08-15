@@ -60,19 +60,19 @@ def run(proc_id, devices, args, log_id, graph, train_nids, valid_nids, test_nids
             new_feat_num = int(args.n_feat*args.fsratio)
             if args.fs_init_method=="seed":
                 # 传输中的类型不能是bool
-                random_selection_mask = torch.zeros(args.n_feat,dtype=torch.int32)
-                if proc_id==0:
-                    index = torch.randperm(args.n_feat,dtype=torch.int64)[:args.new_feat_num]
-                    random_selection_mask[index]=1
-                    dist.broadcast(random_selection_mask,src=0)
-                else:
-                    dist.broadcast(random_selection_mask,src=0)
-                shape=feat.shape
-                feat = feat[:,random_selection_mask]
-                logger.info(f"使用random selection, feature shape由{shape}变为{feat.shape}")
+                random_selection_mask = torch.zeros(args.n_feat,dtype=torch.int64)
+                # if proc_id==0:
+                #     index = torch.randperm(args.n_feat,dtype=torch.int64,device=device)[:new_feat_num]
+                #     random_selection_mask[index]=1
+                #     dist.broadcast(random_selection_mask,src=0)
+                # else:
+                #     dist.broadcast(random_selection_mask,src=0)
+                index = torch.randperm(args.n_feat,dtype=torch.int64)[:new_feat_num]
+                random_selection_mask[index]=1
+                shape=graph.ndata["feat"].shape
+                graph.ndata["feat"] = graph.ndata["feat"][:,random_selection_mask.bool()]
+                logger.info(f"使用random selection, feature shape由{shape}变为{graph.ndata['feat'].shape}")
 
-                # 充当索引, 类型必须是bool
-                random_selection_mask = random_selection_mask.bool().to(device)
             elif args.fs_init_method=="random" or args.fs_init_method=="gini":
                 fs_weights = torch.load(
                         "model/" + args.graph_name + f"_{args.fs_init_method}_fs_layer_final.pth.tar",
