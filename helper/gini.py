@@ -29,8 +29,8 @@ def continous_feature_importance_gini(X:torch.Tensor, y:torch.Tensor):
 
         weighted_gini = (len(left_labels) * left_gini + len(right_labels) * right_gini) / n_samples
 
-        importance[i] = 1 / (weighted_gini+1e-20)
+        importance[i] = 1 / weighted_gini
 
-    importance = (importance - torch.mean(importance)) / torch.std(importance)
+    importance = (importance - torch.min(importance)) / (torch.max(importance) - torch.min(importance))
 
     return importance
