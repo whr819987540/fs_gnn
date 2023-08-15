@@ -8,7 +8,7 @@ from time import time
 from dgl.nn import SAGEConv
 import torch.nn.functional as F
 
-class Model(nn.Module):
+class DGLModel(nn.Module):
     def __init__(self, layer_size:List[int], dropout, weights:torch.Tensor, fs : bool = False, pretrain : bool = True):
         '''
         :param layers_size, [feature, feature(optional if fs), hidden*layer, label]
@@ -20,7 +20,7 @@ class Model(nn.Module):
         :param pretrain: 默认为True, 即使用第一种预训练的方式, 否则, 是用第二种全程online的方法
         :param weights: FS层参数的初始值, weights为None, 表示用随机值进行初始化; weights不为None, 表示用continous_feature_importance_gini函数初始化
         '''
-        super(Model, self).__init__()
+        super(DGLModel, self).__init__()
         self.fs = fs
         self.pretrain = pretrain
 
