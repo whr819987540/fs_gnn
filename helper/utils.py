@@ -23,7 +23,8 @@ from module.gcn_module.first_method_model import FeatureSeclectOut
 
 
 def load_ogb_dataset(name):
-    dataset = DglNodePropPredDataset(name=name, root='./dataset/')
+    # dataset = DglNodePropPredDataset(name=name, root='./dataset/')
+    dataset = DglNodePropPredDataset(name=name, root='/root/autodl-fs/')
     split_idx = dataset.get_idx_split()
     g, label = dataset[0]
     n_node = g.num_nodes()
@@ -355,8 +356,10 @@ def timer(s):
     print('(rank %d) running time of %s: %.3f seconds' % (rank, s, time.time() - t))
 
 
-def get_writer(*tags):
-    path = 'logs'
+def get_writer(*tags,root="./"):
+    path = root
+    tags = list(tags)
+    tags.insert(0,"logs")
     for tag in tags:
         path = join(path, tag)
     writer = SummaryWriter(path)
@@ -445,7 +448,38 @@ class GlobalidIndexMapper:
             # [1275]])    
         # torch.where(torch.tensor([9534,1275])[:,None]==mapper.globalid)
         # (tensor([0, 1]), tensor([10560, 10561]))
-        return torch.where(globalid[:,None]==self.globalid)[1]
+
+        # TODO: 大数据量下无法运行
+        # 首先将globalid转化为n*1的向量，self.globalid是1*n的向量
+        # torch.eq的结果是n*n的矩阵，每一行有且仅有一个True
+        # torch.where就是获取非零值的行索引与列索引
+        # 但是torch.where在INT_MAX<n*n时无法运行
+        # return torch.where(torch.eq(globalid[:,None],self.globalid))[1]
+        
+        # DONE: 排序后二分查找
+        sa,ia=torch.sort(globalid)
+        sb,ib=torch.sort(self.globalid)
+        indices = torch.searchsorted(sb, sa)
+        # >>> A = torch.tensor([2, 4, 5])
+        # >>> B = torch.tensor([5, 2, 4, 1])
+        # >>> torch.sort(A)
+        # torch.return_types.sort(
+        # values=tensor([2, 4, 5]),
+        # indices=tensor([0, 1, 2]))
+        # >>> torch.sort(B)
+        # torch.return_types.sort(
+        # values=tensor([1, 2, 4, 5]),
+        # indices=tensor([3, 1, 2, 0]))
+        # >>> sa,ia=torch.sort(A)
+        # >>> sb,ib=torch.sort(B)
+        # >>> indices = torch.searchsorted(sb, sa)
+        # >>> indices
+        # tensor([1, 2, 3])
+        # >>> ib[indices]
+        # tensor([1, 2, 0])
+        # >>> B[ib[indices]]==A
+        # tensor([True, True, True])
+        return ib[indices]
 
 
     def index_to_globalid(self,index:torch.Tensor)->torch.Tensor:
@@ -580,14 +614,14 @@ class Swapper:
 
             try:
                 # index
-                nodes = self.globalid_index_mapper.globalid_to_index(nodes)
+                nodes = self.globalid_index_mapper.globalid_to_index(nodes.cuda())
                 # send adj line to certain rank
                 start = time.time()
-                data = self.adj_matrix.index_select(0,nodes).to_dense()
+                data = self.adj_matrix.index_select(0,nodes.cuda()).to_dense()
                 end = time.time()
                 self.logger.debug(f"sparse to dense time: {end-start}")
                 dist.send(
-                    data,
+                    data.cpu(),
                     dst=work,
                     tag=int(f"{self.ResponseTag}{self.AdjLineTag}")
                 )
@@ -625,7 +659,7 @@ class Swapper:
         
         try:
             dist.send(
-                tmp, 
+                tmp.cpu(),
                 dst=rank, 
                 tag=int(f"{self.RequesetTag}{self.AdjLineTag}")
             )
@@ -702,9 +736,9 @@ class Swapper:
                 # index
                 nodes = self.globalid_index_mapper_in_feature.globalid_to_index(nodes.cuda())
                 # send features to certain rank
-                data = self.features[nodes,:].cpu()
+                data = self.features[nodes,:]
                 dist.send(
-                    data,
+                    data.cpu(),
                     dst=work,
                     tag=int(f"{self.ResponseTag}{self.FeatureTag}")
                 )
@@ -754,7 +788,7 @@ class Swapper:
             # self.logger.debug(f"before {self.rank} get feature from {rank}, {tmp}")
             # dist.send(nodes.cpu(), dst=rank,tag=self.FeatureTag)
             dist.send(
-                tmp, 
+                tmp.cpu(), 
                 dst=rank, 
                 tag=int(f"{self.RequesetTag}{self.FeatureTag}")
             )
