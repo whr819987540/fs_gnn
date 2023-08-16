@@ -177,7 +177,8 @@ def run(proc_id, devices, args, log_id, graph, train_nids, valid_nids, test_nids
     best_model = None
 
     # Copied from previous tutorial with changes highlighted.
-    start_recv_bytes, start_sent_bytes = get_network_usage('lo')
+    if proc_id == 0:
+        start_recv_bytes, start_sent_bytes = get_network_usage('lo')
     for epoch in range(args.n_epochs):
         model.train()
 
@@ -203,26 +204,11 @@ def run(proc_id, devices, args, log_id, graph, train_nids, valid_nids, test_nids
                     {"loss": "%.03f" % loss.item(), "acc": "%.03f" % accuracy},
                     refresh=False,
                 )
-        end_recv_bytes, end_sent_bytes = get_network_usage('lo')
-        print(f"recv_bytes: {end_recv_bytes-start_recv_bytes} sent_bytes: {end_sent_bytes-start_sent_bytes}")
+        if proc_id == 0:
+            end_recv_bytes, end_sent_bytes = get_network_usage('lo')
+            print(f"recv_bytes: {end_recv_bytes-start_recv_bytes} sent_bytes: {end_sent_bytes-start_sent_bytes}")
         break
         
-
-
-    if proc_id == 0:
-        # save model
-        torch.save(best_model.state_dict(), best_model_path)
-        logger.info(f"save model to {best_model_path}")
-        # save fs laye weights
-        if args.pretrain == True and args.fs == True:
-            path = "model/" + args.graph_name + f"_{args.fs_init_method}_fs_layer_final.pth.tar"
-            torch.save(
-                {
-                    "fs_layer.weights": best_model.state_dict()["fs_layer.weights"],
-                },
-                path,
-            )
-            logger.info(f"save fs layer weights to {path}")
 
 def calc_acc(logits, labels):
     if labels.dim() == 1:
