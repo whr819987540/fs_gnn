@@ -638,7 +638,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail:torch.Tensor, m
         f"dataset={args.dataset}",
         f"model={args.model},sampling_method={args.sampling_method},pretrain={args.pretrain},fs={args.fs},fs_init_method={args.fs_init_method}",
         f"tag={tag}",
-        f"layer_size={layer_size},lr={args.lr},fsratio={args.fsratio},dropout={args.dropout},period={args.log_every}",
+        f"layer_size={layer_size},lr={args.lr},fsratio={args.fsratio},dropout={args.dropout},period={args.log_every},batch_size={args.batch_size},sample_num={args.sample_num}",
         f"partition={args.n_partitions}",
         now_str()
     )
@@ -688,7 +688,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail:torch.Tensor, m
     # on gpu, so move it to cpu
     inner_boundary_nodes_adj_matrix = get_adj_matrix_from_graph(graph)
     # inner_boundary_nodes_adj_matrix = inner_boundary_nodes_adj_matrix.to(matrix_value_type).to_dense().cpu().t()
-    inner_boundary_nodes_adj_matrix = inner_boundary_nodes_adj_matrix.to(matrix_value_type).cpu().t()
+    inner_boundary_nodes_adj_matrix = inner_boundary_nodes_adj_matrix.to(matrix_value_type).t()
 
 
     # communicate adj line with other ranks
@@ -710,421 +710,425 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail:torch.Tensor, m
     for epoch in range(args.n_epochs):
         logger.info(f"epoch: {epoch}")
         epoch_logger = logging.getLogger(f"[{rank},{epoch}]")
-        
-        # adj of each layer
-        adjs = [None for _ in range(gnn_layer_num)]
+
+        batch_loader = sampler.DataLoader(
+            dataset = sampler.MyDataset(inner_nodes[train_mask]),
+            batch_size=args.batch_size, 
+            shuffle=False,
+        )
 
         # global id, GPU
-        batch = get_sampled_batch_from_inner_nodes(inner_nodes, node_dict['train_mask'], args) # L-1(output)
-        batch_index = mapper_manager[rank].globalid_to_index(batch)
-        # global id
-        previous_nodes = batch # L-j层的上一层是L-j+1层
-        
-        # batch节点作为行，batch节点的所有邻居节点作为列
-        for layer in range(gnn_layer_num - 1, -1, -1): # L-1, L-2, L-3, ..., 0(input)
-            epoch_logger.info(f"epoch: {epoch} layer: {layer}")
-            layer_logger = logging.getLogger(f"[{rank},{epoch},{layer}]")
-                        
-            accumelated_time = 0
-            # TODO: 逐个操作、获取本地adj_matrix的某行，对于稀疏矩阵来说太费时，需要聚合一下、转化为对tensor的操作
-            # 获取各个节点的rank
-            partition_detail = all_partition_detail[previous_nodes]
-            # 根据rank对previous_nodes进行分组并获取每个元素及其索引
-            ranks, indices = partition_detail.unique(return_inverse=True)
+        # batch = get_sampled_batch_from_inner_nodes(inner_nodes, node_dict['train_mask'], args) # L-1(output)
+        for batch in batch_loader:
+            # adj of each layer
+            adjs = [None for _ in range(gnn_layer_num)]
+            batch_index = mapper_manager[rank].globalid_to_index(batch)
+            # global id
+            previous_nodes = batch # L-j层的上一层是L-j+1层
+            
+            # batch节点作为行，batch节点的所有邻居节点作为列
+            for layer in range(gnn_layer_num - 1, -1, -1): # L-1, L-2, L-3, ..., 0(input)
+                epoch_logger.info(f"epoch: {epoch} layer: {layer}")
+                layer_logger = logging.getLogger(f"[{rank},{epoch},{layer}]")
+                            
+                accumelated_time = 0
+                # TODO: 逐个操作、获取本地adj_matrix的某行，对于稀疏矩阵来说太费时，需要聚合一下、转化为对tensor的操作
+                # 获取各个节点的rank
+                partition_detail = all_partition_detail[previous_nodes]
+                # 根据rank对previous_nodes进行分组并获取每个元素及其索引
+                ranks, indices = partition_detail.unique(return_inverse=True)
 
-            adj_line_result = []
-            # [{nodes(global id), adj_lines, rank, mapper}]
-            for idx, group_rank in enumerate(ranks):
-                # index of grouped nodes in previous_nodes
-                indexs = (indices == idx).int().nonzero().squeeze()
-                if indexs.dim() == 0:
-                    indexs = indexs.unsqueeze(0)
-                # global id of grouped nodes in previous_nodes
-                group_nodes_global_id = previous_nodes[indexs]
-                group_rank = group_rank.item()
-                # inner node
-                if group_rank == rank:
-                    group_nodes_index_in_adj_matrix = mapper_manager[group_rank].globalid_to_index(group_nodes_global_id)
-                    tmp = {
-                        "nodes":group_nodes_global_id,
-                        "adj_lines":inner_boundary_nodes_adj_matrix.index_select(0,group_nodes_index_in_adj_matrix.cpu()).coalesce().cuda(),
-                        "rank":group_rank,
-                        "mapper":GlobalidIndexMapper(group_nodes_global_id),
-                    }
-                    adj_line_result.append(tmp)
+                adj_line_result = []
+                # [{nodes(global id), adj_lines, rank, mapper}]
+                for idx, group_rank in enumerate(ranks):
+                    # index of grouped nodes in previous_nodes
+                    indexs = (indices == idx).int().nonzero().squeeze()
+                    if indexs.dim() == 0:
+                        indexs = indexs.unsqueeze(0)
+                    # global id of grouped nodes in previous_nodes
+                    group_nodes_global_id = previous_nodes[indexs]
+                    group_rank = group_rank.item()
+                    # inner node
+                    if group_rank == rank:
+                        group_nodes_index_in_adj_matrix = mapper_manager[group_rank].globalid_to_index(group_nodes_global_id)
+                        tmp = {
+                            "nodes":group_nodes_global_id,
+                            "adj_lines":inner_boundary_nodes_adj_matrix.index_select(0,group_nodes_index_in_adj_matrix).coalesce(),
+                            "rank":group_rank,
+                            "mapper":GlobalidIndexMapper(group_nodes_global_id),
+                        }
+                        adj_line_result.append(tmp)
+                    else:
+                        # 将与某个worker的多次通信聚合为一次通信
+                        res = swapper.get_adj_line_from_worker(group_rank,group_nodes_global_id)
+                        res['adj_lines'] = res['adj_lines'].cuda()
+                        res['mapper'] = GlobalidIndexMapper(group_nodes_global_id)
+                        adj_line_result.append(res)
+                # # global id
+                # for node in previous_nodes:
+                #     # index
+                #     node_rank = all_partition_detail[node.item()]
+                #     index = mapper_manager[node_rank].globalid_to_index(node.unsqueeze(0))
+                #     # inner node
+                #     if node_rank == rank:
+                #         # 直接获取本地邻接矩阵[node, :], 记为Nj
+                #         # index
+                #         # adj_line只是记录了某个inner node的邻居节点在邻接矩阵中的index
+                #         # index, shape:[1,x]
+                #         try:
+                #             # TODO: convert sparse to dense is very time consuming
+                                # 对于十万的数据量，这个操作需要0.2-0.3s
+                #             # DONE: 聚合统一rank的index_select操作
+                #             # 2023-08-09 15:50:27 [0,0,1] "/root/fs_gnn/dist_gcn_train.py", line 765, DEBUG: local adj line sparse to dense using time: 134.02674007415771
+                #             # previous nodes number is less than 512
+                #             start = time.time()
+                #             # adj_line = inner_boundary_nodes_adj_matrix.index_select(0,index).to_dense()
+                #             # DONE: sparse matrix
+                #             adj_line = inner_boundary_nodes_adj_matrix.index_select(0,index).coalesce()
+                #             end = time.time()
+                            
+                #             accumelated_time += end-start
+                #         except:
+                #             layer_logger.exception(f"global id {node}, index {index}, rank {node_rank} {dist.get_rank()}")
+                #             raise Exception
+                #         adj_line_result.append({
+                #             "node":node, # globalid
+                #             "adj_line":adj_line, # index
+                #             "rank":node_rank,
+                #         })
+                #     else:
+                #         # node j所在worker传输邻接矩阵[node j, :], 记为Nj
+                #         # the partition id of node j is the rank of the worker which the node j belongs to
+                #         # index
+                #         swapper_tasks[node_rank] = torch.cat([swapper_tasks[node_rank], node.unsqueeze(0).to(index_type)])
+                #         # print("neighbor node in other workers")
+
+                # layer_logger.debug(f"swapper_tasks: {swapper_tasks}")
+                # layer_logger.debug(f"local adj line sparse to dense using time: {accumelated_time}")
+
+                # # collect the adj_line from other workers through communication
+                # # 如果是异步执行，可以避免同步执行时与某个rank的通信时间过长而阻碍其它通信
+                # # 但是只有当通信完成时，才能开始后面的工作（具体来说是构建adj_matrix时），因此需要join等待子线程全部完成
+                # adj_line_thread_pool = ThreadPool(processes=size-1)
+                # for i in range(size):
+                #     # TODO: adjline通信方案选择
+                #     # 异步，线程池
+                # #     if swapper_tasks[i].shape[0]:
+                # #         layer_logger.debug(f"[{rank}] send to [{i}]: {swapper_tasks[i]}")
+                # #         adj_line_thread_pool.apply_async(swapper.get_adj_line_from_worker, args=(i, swapper_tasks[i]), callback=lambda x:adj_line_result.extend(x))
+                # # # wait for all subprocesses to finish
+                # # adj_line_thread_pool.close()
+                # # adj_line_thread_pool.join()
+
+                #     # 同步
+                #     if swapper_tasks[i].shape[0]:
+                #         layer_logger.debug(f"[{rank}] send to [{i}]: {swapper_tasks[i]}")
+                #         res = swapper.get_adj_line_from_worker(i,swapper_tasks[i])
+                #         adj_line_result.extend(res)
+                #         # 原始数据太长，只打印一部分
+                #         layer_logger.debug(f"adj lines from {i}: {res[:5]}")
+
+                # # 原始数据太长，不记录
+                # # layer_logger.debug(f"adj lines {adj_line_result}")
+                # layer_logger.debug(f"adj lines {len(adj_line_result)}")
+
+                # adj_line 中为1元素的index => global id
+                # >>> a=torch.Tensor([1,2,3,4,5,1,2,3])
+                # >>> a
+                # tensor([1., 2., 3., 4., 5., 1., 2., 3.])
+                # >>> torch.where(a == 1)
+                # (tensor([0, 5]),)
+                # >>> torch.where(a == 1)[0]
+                # tensor([0, 5])
+                # >>> b=torch.Tensor([11,12,13,14,15,16,17,18])
+                # >>> b[torch.where(a == 1)[0]]
+                # tensor([11., 16.])
+                start = time.time()
+                merged_nodes_global_id = torch.tensor([],dtype=index_type).cuda()
+                for item in adj_line_result:
+                    # adj_line = item["adj_line"]
+                    # tmp_rank = item["rank"]
+
+                    # # TODO: use sparse matrix
+                    # # nodes_in_adj_line_global_id = mapper_manager[tmp_rank].index_to_globalid(torch.where(adj_line == 1)[1])
+                    # # 当adjline是sparese_matrix时, values是1，均为非0值，自动完成比较
+                    # # DONE: use sparse matrix
+                    # nodes_in_adj_line_global_id = mapper_manager[tmp_rank].index_to_globalid(adj_line.indices()[1])
+                    # merged_nodes_global_id = torch.cat([merged_nodes_global_id, nodes_in_adj_line_global_id])
+
+                    adj_lines = item["adj_lines"]
+                    tmp_rank = item["rank"]
+
+                    # TODO: use sparse matrix
+                    # nodes_in_adj_line_global_id = mapper_manager[tmp_rank].index_to_globalid(torch.where(adj_line == 1)[1])
+                    # 当adjline是sparese_matrix时, values是1，均为非0值，自动完成比较
+                    # DONE: use sparse matrix
+                    nodes_in_adj_line_global_id = mapper_manager[tmp_rank].index_to_globalid(adj_lines.indices()[1])
+                    merged_nodes_global_id = torch.cat([merged_nodes_global_id, nodes_in_adj_line_global_id])
+                    
+                end = time.time()
+                layer_logger.debug(f"get nodes to be merged using time: {end-start}")
+
+                start = time.time()
+                merged_nodes_global_id = torch.unique(merged_nodes_global_id)
+                end = time.time()
+                layer_logger.debug(f"merged_nodes_global_id.shape {merged_nodes_global_id.shape}, using time:{end-start}")
+                
+                # previous nodes肯定在备选的merged_nodes_global_id里面
+                # torch.unique(torch.isin(previous_nodes,merged_nodes_global_id))
+                # tensor([True])
+                # rank 0, 第L-1层的input中出现boundary nodes
+                # torch.unique(torch.isin(merged_nodes_global_id.cuda(),node_dict['_ID'][node_dict['inner_node']]))
+                # tensor([False,  True], device='cuda:0')
+                
+                start = time.time()
+                row_index = torch.LongTensor().cuda()
+                col_index = torch.LongTensor().cuda()
+                
+                merged_nodes_mapper = GlobalidIndexMapper(merged_nodes_global_id)
+
+                for item in adj_line_result:
+                    # node = item["node"] # globalid
+                    # index = merged_nodes_mapper.globalid_to_index(node.unsqueeze(0)) # index
+                    # adj_line = item["adj_line"]
+                    # tmp_rank = item["rank"]
+                    
+                    # # TODO: use sparse matrix
+                    # # nodes_in_adj_line_global_id = mapper_manager[tmp_rank].index_to_globalid(torch.where(adj_line == 1)[1])
+                    # # 当adjline是sparese_matrix时, values是1，均为非0值，自动完成比较
+                    # # DONE: use sparse matrix
+                    # nodes_in_adj_line_global_id = mapper_manager[tmp_rank].index_to_globalid(adj_line.indices()[1])
+                    
+                    # # adj_matrix[index, merged_nodes_mapper.globalid_to_index(nodes_in_adj_line_global_id)] = 1
+                    # nodes_in_adj_line_index = merged_nodes_mapper.globalid_to_index(nodes_in_adj_line_global_id)
+                    # row_index = torch.cat([row_index, index.repeat(nodes_in_adj_line_index.shape[0])])
+                    # col_index = torch.cat([col_index, nodes_in_adj_line_index])
+
+                    nodes = item["nodes"] # globalid
+                    index = merged_nodes_mapper.globalid_to_index(nodes) # index
+                    adj_lines = item["adj_lines"]
+                    tmp_rank = item["rank"]
+                    row_mapper = item["mapper"]
+                    
+                    nodes_in_adj_line_global_id_row = row_mapper.index_to_globalid(adj_lines.indices()[0])                
+                    nodes_in_adj_line_global_id_col = mapper_manager[tmp_rank].index_to_globalid(adj_lines.indices()[1])
+                    
+                    # adj_matrix[index, merged_nodes_mapper.globalid_to_index(nodes_in_adj_line_global_id)] = 1
+                    nodes_in_adj_line_index_row = merged_nodes_mapper.globalid_to_index(nodes_in_adj_line_global_id_row)
+                    nodes_in_adj_line_index_col = merged_nodes_mapper.globalid_to_index(nodes_in_adj_line_global_id_col)
+                    
+                    row_index = torch.cat([row_index, nodes_in_adj_line_index_row])
+                    col_index = torch.cat([col_index, nodes_in_adj_line_index_col])
+
+                # 删除区
+                del adj_line_result
+                
+                
+                # 将对角线置为1
+                row_index = torch.cat([row_index, torch.arange(merged_nodes_global_id.shape[0]).cuda()])
+                col_index = torch.cat([col_index, torch.arange(merged_nodes_global_id.shape[0]).cuda()])
+                # merged_nodes_global_id 作为行列
+                adj_matrix = torch.sparse.IntTensor(
+                    indices=torch.stack([row_index, col_index]),
+                    values=torch.ones(row_index.shape[0], dtype=matrix_value_type).cuda(),
+                    size=torch.Size((merged_nodes_global_id.shape[0],merged_nodes_global_id.shape[0])),
+                ).coalesce().cuda()
+                
+                adj_matrix_clone = adj_matrix.clone()
+                adj_matrix = adj_matrix_clone + adj_matrix_clone.T
+                end = time.time()
+                layer_logger.debug(f"construct adj matrix using time: {end-start}")
+
+                # 删除区
+                del adj_matrix_clone
+
+                # update previous_nodes from layer-wise sampling function
+                # global id => index
+                if args.sampling_method == "layer_wise_sampling":
+                    adj, sampled_nodes = layer_wise_sampling(adj_matrix, merged_nodes_mapper.globalid_to_index(previous_nodes), args.sample_num)
+                elif args.sampling_method == "layer_importance_sampling":
+                    adj, sampled_nodes = layer_importance_sampling(adj_matrix, merged_nodes_mapper.globalid_to_index(previous_nodes), args.sample_num)
                 else:
-                    # 将与某个worker的多次通信聚合为一次通信
-                    res = swapper.get_adj_line_from_worker(group_rank,group_nodes_global_id)
-                    res['adj_lines'] = res['adj_lines'].cuda()
-                    res['mapper'] = GlobalidIndexMapper(group_nodes_global_id)
-                    adj_line_result.append(res)
-            # # global id
-            # for node in previous_nodes:
-            #     # index
-            #     node_rank = all_partition_detail[node.item()]
-            #     index = mapper_manager[node_rank].globalid_to_index(node.unsqueeze(0))
-            #     # inner node
-            #     if node_rank == rank:
-            #         # 直接获取本地邻接矩阵[node, :], 记为Nj
-            #         # index
-            #         # adj_line只是记录了某个inner node的邻居节点在邻接矩阵中的index
-            #         # index, shape:[1,x]
-            #         try:
-            #             # TODO: convert sparse to dense is very time consuming
-                            # 对于十万的数据量，这个操作需要0.2-0.3s
-            #             # DONE: 聚合统一rank的index_select操作
-            #             # 2023-08-09 15:50:27 [0,0,1] "/root/fs_gnn/dist_gcn_train.py", line 765, DEBUG: local adj line sparse to dense using time: 134.02674007415771
-            #             # previous nodes number is less than 512
-            #             start = time.time()
-            #             # adj_line = inner_boundary_nodes_adj_matrix.index_select(0,index).to_dense()
-            #             # DONE: sparse matrix
-            #             adj_line = inner_boundary_nodes_adj_matrix.index_select(0,index).coalesce()
-            #             end = time.time()
-                        
-            #             accumelated_time += end-start
-            #         except:
-            #             layer_logger.exception(f"global id {node}, index {index}, rank {node_rank} {dist.get_rank()}")
-            #             raise Exception
-            #         adj_line_result.append({
-            #             "node":node, # globalid
-            #             "adj_line":adj_line, # index
-            #             "rank":node_rank,
-            #         })
+                    raise ValueError
+
+                layer_logger.debug(
+                    f"""
+                        previous_nodes.shape {previous_nodes.shape}, 
+                        torch.unique(previous_nodes).shape {torch.unique(previous_nodes).shape},
+                        merged_nodes_mapper.globalid.shape {merged_nodes_mapper.globalid.shape},
+                        merged_nodes_mapper.globalid_to_index(previous_nodes).shape {merged_nodes_mapper.globalid_to_index(previous_nodes).shape} ,
+                        adj.shape {adj.shape},
+                        adj_matrix.shape {adj_matrix.shape}, 
+                        sampled_nodes.shape {sampled_nodes.shape}
+                    """
+                )
+
+                # index => global id
+                previous_nodes=merged_nodes_mapper.index_to_globalid(sampled_nodes)
+                # adj与feature一起运算，放到GPU里面
+                adjs[layer] = adj
+                
+            # glolbal id
+            input_nodes = previous_nodes
+            # input_nodes的feature可能在别的worker上
+            # 通过all_partition_detail(global id=>rank)找到input_nodes所在的worker
+            # global id
+            # input_nodes 与 input_nodes_rank 在相同index的情况下一一对应
+            input_nodes_rank = all_partition_detail[input_nodes]
+
+            input_nodes_feat = torch.zeros((input_nodes.shape[0],feat.shape[1]), dtype=feat.dtype,device=feat.device)
+
+            ranks = torch.unique(input_nodes_rank).tolist()
+            feature_thread_pool = ThreadPool(processes=size-1)
+            res = [] # 存放异步通信的结果
+            for tmp_rank in ranks:
+                idx = torch.where(input_nodes_rank == tmp_rank)[0]
+                if tmp_rank == rank:
+                    device = globalid_index_mapper_in_feature.globalid.device
+                    input_nodes_feat[idx.to(device),:] = feat[globalid_index_mapper_in_feature.globalid_to_index(input_nodes[idx].to(device)),:]
+                else:
+                    # 通信
+                    # input_nodes[idx] global id，访问tmp_rank worker
+                    # 点对点访问
+                    layer_logger.debug("get_feature_from_worker")
+
+                    # TODO: feature通信方案选择
+                    # 异步，线程池
+                    # feature_thread_pool.apply_async(
+                    #     swapper.get_feature_from_worker, 
+                    #     args=(tmp_rank, idx, input_nodes[idx].to(index_type)), 
+                    #     callback=lambda x:res.append(x),
+                    # )
+
+                    # 同步，线程池
+                    # item = feature_thread_pool.apply(
+                    #     swapper.get_feature_from_worker, 
+                    #     args=(tmp_rank, idx, input_nodes[idx].to(index_type)), 
+                    # )
+
+                    # 同步
+                    item = swapper.get_feature_from_worker(tmp_rank, idx, input_nodes[idx].to(index_type))
+                    input_nodes_feat[item["idx"],:] = item["feat"]
+                    layer_logger.debug(f"input_nodes_feat {item} {item['feat'].shape}")
+
+
+            # TODO: fix
+            # wait for all subprocesses to finish
+            # feature_thread_pool.close()
+            # feature_thread_pool.join()
+            # 处理异步通信结果
+            # for item in res:
+            #     print(f"[{rank}] epoch:{epoch} layer:{i} idx:{item['idx'].shape} feat:{item['feat'].shape}")
+            #     input_nodes_feat[item["idx"],:] = item["feat"]
+            
+            # OPT3: update the step in optimizer
+            optimizer.state['step']["epoch"] = epoch
+            
+            update_flag = get_update_flag(epoch, args)
+                
+            t0 = time.time()
+            model.train()
+
+            # forward
+            if args.model == 'graphsage':
+                logits = model(graph, feat, in_deg, update_flag)
+                # print(type(graph)) # <class 'dgl.heterograph.DGLGraph'>
+                # logits = model(graph, feat)
+            elif args.model == 'gcn':
+                # input_nodes' feat as input
+                # batch label as wanted output
+                logits = model(graph,feat[input_nodes,:],adjs,update_flag)
+                loss = loss_func(
+                    results=logits,
+                    labels=labels[batch_index.cuda()],
+                    lamda=args.lamda,
+                    sigma=args.sigma,
+                    model=model,
+                    fs=args.fs,
+                    args=args,
+                )
+            elif args.model == 'gcn_first':
+                for adj in adjs:
+                    # [408, 512]
+                    # [56, 408]
+                    # [16, 56]
+                    epoch_logger.debug(f"adj.shape {adj.shape}")
+                # [512, 500]
+                logits = model(input_nodes_feat, adjs)
+                loss = loss_func(
+                    results=logits,
+                    labels=labels[batch_index.cuda()],
+                    lamda=args.lamda,
+                    sigma=args.sigma,
+                    model=model,
+                    fs=args.fs,
+                    args=args,
+                )
+            elif args.model == 'gcn_second':
+                pass
+            else:
+                raise NotImplementedError
+
+            # # loss
+            # if args.inductive:
+            #     loss = loss_func(
+            #         results=logits,
+            #         labels=labels,
+            #         lamda=args.lamda,
+            #         sigma=args.sigma,
+            #         model=model,
+            #         fs=args.fs,
+            #         args=args,
+            #     )
+            #     # loss = loss_fcn(logits, labels)
+            # else:
+            #     if args.model == 'gcn':
+            #         loss = loss_func(
+            #             results=logits,
+            #             labels=labels[batch],
+            #             lamda=args.lamda,
+            #             sigma=args.sigma,
+            #             model=model,
+            #             fs=args.fs,
+            #             args=args,
+            #         )
+            #     elif args.model == 'gcn_first':
+            #         loss = None
+            #     elif args.model == 'gcn_second':
+            #         loss = None
             #     else:
-            #         # node j所在worker传输邻接矩阵[node j, :], 记为Nj
-            #         # the partition id of node j is the rank of the worker which the node j belongs to
-            #         # index
-            #         swapper_tasks[node_rank] = torch.cat([swapper_tasks[node_rank], node.unsqueeze(0).to(index_type)])
-            #         # print("neighbor node in other workers")
+            #         loss = loss_func(
+            #             results=logits[train_mask],
+            #             labels=labels[train_mask],
+            #             lamda=args.lamda,
+            #             sigma=args.sigma,
+            #             model=model,
+            #             fs=args.fs,
+            #             args=args,
+            #         )
+            #         # loss = loss_fcn(logits[train_mask], labels[train_mask])
 
-            # layer_logger.debug(f"swapper_tasks: {swapper_tasks}")
-            # layer_logger.debug(f"local adj line sparse to dense using time: {accumelated_time}")
-
-            # # collect the adj_line from other workers through communication
-            # # 如果是异步执行，可以避免同步执行时与某个rank的通信时间过长而阻碍其它通信
-            # # 但是只有当通信完成时，才能开始后面的工作（具体来说是构建adj_matrix时），因此需要join等待子线程全部完成
-            # adj_line_thread_pool = ThreadPool(processes=size-1)
-            # for i in range(size):
-            #     # TODO: adjline通信方案选择
-            #     # 异步，线程池
-            # #     if swapper_tasks[i].shape[0]:
-            # #         layer_logger.debug(f"[{rank}] send to [{i}]: {swapper_tasks[i]}")
-            # #         adj_line_thread_pool.apply_async(swapper.get_adj_line_from_worker, args=(i, swapper_tasks[i]), callback=lambda x:adj_line_result.extend(x))
-            # # # wait for all subprocesses to finish
-            # # adj_line_thread_pool.close()
-            # # adj_line_thread_pool.join()
-
-            #     # 同步
-            #     if swapper_tasks[i].shape[0]:
-            #         layer_logger.debug(f"[{rank}] send to [{i}]: {swapper_tasks[i]}")
-            #         res = swapper.get_adj_line_from_worker(i,swapper_tasks[i])
-            #         adj_line_result.extend(res)
-            #         # 原始数据太长，只打印一部分
-            #         layer_logger.debug(f"adj lines from {i}: {res[:5]}")
-
-            # # 原始数据太长，不记录
-            # # layer_logger.debug(f"adj lines {adj_line_result}")
-            # layer_logger.debug(f"adj lines {len(adj_line_result)}")
-
-            # adj_line 中为1元素的index => global id
-            # >>> a=torch.Tensor([1,2,3,4,5,1,2,3])
-            # >>> a
-            # tensor([1., 2., 3., 4., 5., 1., 2., 3.])
-            # >>> torch.where(a == 1)
-            # (tensor([0, 5]),)
-            # >>> torch.where(a == 1)[0]
-            # tensor([0, 5])
-            # >>> b=torch.Tensor([11,12,13,14,15,16,17,18])
-            # >>> b[torch.where(a == 1)[0]]
-            # tensor([11., 16.])
+            optimizer.zero_grad(set_to_none=True)
+            # OPT3: calculate the gradients but aggregate the gradients periodically by reduce_hook and optimizer.state['step']
+            # reduce_hook will aggregate the gradients of the same parameter on different processes
+            torch.cuda.synchronize()
             start = time.time()
-            merged_nodes_global_id = torch.tensor([],dtype=index_type).cuda()
-            for item in adj_line_result:
-                # adj_line = item["adj_line"]
-                # tmp_rank = item["rank"]
-
-                # # TODO: use sparse matrix
-                # # nodes_in_adj_line_global_id = mapper_manager[tmp_rank].index_to_globalid(torch.where(adj_line == 1)[1])
-                # # 当adjline是sparese_matrix时, values是1，均为非0值，自动完成比较
-                # # DONE: use sparse matrix
-                # nodes_in_adj_line_global_id = mapper_manager[tmp_rank].index_to_globalid(adj_line.indices()[1])
-                # merged_nodes_global_id = torch.cat([merged_nodes_global_id, nodes_in_adj_line_global_id])
-
-                adj_lines = item["adj_lines"]
-                tmp_rank = item["rank"]
-
-                # TODO: use sparse matrix
-                # nodes_in_adj_line_global_id = mapper_manager[tmp_rank].index_to_globalid(torch.where(adj_line == 1)[1])
-                # 当adjline是sparese_matrix时, values是1，均为非0值，自动完成比较
-                # DONE: use sparse matrix
-                nodes_in_adj_line_global_id = mapper_manager[tmp_rank].index_to_globalid(adj_lines.indices()[1])
-                merged_nodes_global_id = torch.cat([merged_nodes_global_id, nodes_in_adj_line_global_id])
-                
+            loss.backward()
+            torch.cuda.synchronize()
             end = time.time()
-            layer_logger.debug(f"get nodes to be merged using time: {end-start}")
+            backward_time += end - start
+            # 这里实际上是在等待同步完成
+            # 需要更新时才会统计时间
+            if update_flag:
+                pre_reduce = time.time()
+                ctx.reducer.synchronize()
+                reduce_time = time.time() - pre_reduce
 
-            start = time.time()
-            merged_nodes_global_id = torch.unique(merged_nodes_global_id)
-            end = time.time()
-            layer_logger.debug(f"merged_nodes_global_id.shape {merged_nodes_global_id.shape}, using time:{end-start}")
-            
-            # previous nodes肯定在备选的merged_nodes_global_id里面
-            # torch.unique(torch.isin(previous_nodes,merged_nodes_global_id))
-            # tensor([True])
-            # rank 0, 第L-1层的input中出现boundary nodes
-            # torch.unique(torch.isin(merged_nodes_global_id.cuda(),node_dict['_ID'][node_dict['inner_node']]))
-            # tensor([False,  True], device='cuda:0')
-            
-            start = time.time()
-            row_index = torch.LongTensor().cuda()
-            col_index = torch.LongTensor().cuda()
-            
-            merged_nodes_mapper = GlobalidIndexMapper(merged_nodes_global_id)
+            ctx.buffer.next_epoch()
 
-            for item in adj_line_result:
-                # node = item["node"] # globalid
-                # index = merged_nodes_mapper.globalid_to_index(node.unsqueeze(0)) # index
-                # adj_line = item["adj_line"]
-                # tmp_rank = item["rank"]
-                
-                # # TODO: use sparse matrix
-                # # nodes_in_adj_line_global_id = mapper_manager[tmp_rank].index_to_globalid(torch.where(adj_line == 1)[1])
-                # # 当adjline是sparese_matrix时, values是1，均为非0值，自动完成比较
-                # # DONE: use sparse matrix
-                # nodes_in_adj_line_global_id = mapper_manager[tmp_rank].index_to_globalid(adj_line.indices()[1])
-                
-                # # adj_matrix[index, merged_nodes_mapper.globalid_to_index(nodes_in_adj_line_global_id)] = 1
-                # nodes_in_adj_line_index = merged_nodes_mapper.globalid_to_index(nodes_in_adj_line_global_id)
-                # row_index = torch.cat([row_index, index.repeat(nodes_in_adj_line_index.shape[0])])
-                # col_index = torch.cat([col_index, nodes_in_adj_line_index])
-
-                nodes = item["nodes"] # globalid
-                index = merged_nodes_mapper.globalid_to_index(nodes) # index
-                adj_lines = item["adj_lines"]
-                tmp_rank = item["rank"]
-                row_mapper = item["mapper"]
-                
-                nodes_in_adj_line_global_id_row = row_mapper.index_to_globalid(adj_lines.indices()[0])                
-                nodes_in_adj_line_global_id_col = mapper_manager[tmp_rank].index_to_globalid(adj_lines.indices()[1])
-                
-                # adj_matrix[index, merged_nodes_mapper.globalid_to_index(nodes_in_adj_line_global_id)] = 1
-                nodes_in_adj_line_index_row = merged_nodes_mapper.globalid_to_index(nodes_in_adj_line_global_id_row)
-                nodes_in_adj_line_index_col = merged_nodes_mapper.globalid_to_index(nodes_in_adj_line_global_id_col)
-                
-                row_index = torch.cat([row_index, nodes_in_adj_line_index_row])
-                col_index = torch.cat([col_index, nodes_in_adj_line_index_col])
-
-            # 删除区
-            del adj_line_result
-            
-            
-            # 将对角线置为1
-            row_index = torch.cat([row_index, torch.arange(merged_nodes_global_id.shape[0]).cuda()])
-            col_index = torch.cat([col_index, torch.arange(merged_nodes_global_id.shape[0]).cuda()])
-            # merged_nodes_global_id 作为行列
-            adj_matrix = torch.sparse.IntTensor(
-                indices=torch.stack([row_index, col_index]),
-                values=torch.ones(row_index.shape[0], dtype=matrix_value_type).cuda(),
-                size=torch.Size((merged_nodes_global_id.shape[0],merged_nodes_global_id.shape[0])),
-            ).coalesce().cuda()
-            
-            adj_matrix_clone = adj_matrix.clone()
-            adj_matrix = adj_matrix_clone + adj_matrix_clone.T
-            end = time.time()
-            layer_logger.debug(f"construct adj matrix using time: {end-start}")
-
-            # 删除区
-            del adj_matrix_clone
-
-            # update previous_nodes from layer-wise sampling function
-            # global id => index
-            if args.sampling_method == "layer_wise_sampling":
-                adj, sampled_nodes = layer_wise_sampling(adj_matrix, merged_nodes_mapper.globalid_to_index(previous_nodes), args.sample_num)
-            elif args.sampling_method == "layer_importance_sampling":
-                adj, sampled_nodes = layer_importance_sampling(adj_matrix, merged_nodes_mapper.globalid_to_index(previous_nodes), args.sample_num)
-            else:
-                raise ValueError
-
-            layer_logger.debug(
-                f"""
-                    previous_nodes.shape {previous_nodes.shape}, 
-                    torch.unique(previous_nodes).shape {torch.unique(previous_nodes).shape},
-                    merged_nodes_mapper.globalid.shape {merged_nodes_mapper.globalid.shape},
-                    merged_nodes_mapper.globalid_to_index(previous_nodes).shape {merged_nodes_mapper.globalid_to_index(previous_nodes).shape} ,
-                    adj.shape {adj.shape},
-                    adj_matrix.shape {adj_matrix.shape}, 
-                    sampled_nodes.shape {sampled_nodes.shape}
-                """
-            )
-
-            # index => global id
-            previous_nodes=merged_nodes_mapper.index_to_globalid(sampled_nodes)
-            # adj与feature一起运算，放到GPU里面
-            adjs[layer] = adj
-            
-        # glolbal id
-        input_nodes = previous_nodes
-        # input_nodes的feature可能在别的worker上
-        # 通过all_partition_detail(global id=>rank)找到input_nodes所在的worker
-        # global id
-        # input_nodes 与 input_nodes_rank 在相同index的情况下一一对应
-        input_nodes_rank = all_partition_detail[input_nodes]
-
-        input_nodes_feat = torch.zeros((input_nodes.shape[0],feat.shape[1]), dtype=feat.dtype,device=feat.device)
-
-        ranks = torch.unique(input_nodes_rank).tolist()
-        feature_thread_pool = ThreadPool(processes=size-1)
-        res = [] # 存放异步通信的结果
-        for tmp_rank in ranks:
-            idx = torch.where(input_nodes_rank == tmp_rank)[0]
-            if tmp_rank == rank:
-                device = globalid_index_mapper_in_feature.globalid.device
-                input_nodes_feat[idx.to(device),:] = feat[globalid_index_mapper_in_feature.globalid_to_index(input_nodes[idx].to(device)),:]
-            else:
-                # 通信
-                # input_nodes[idx] global id，访问tmp_rank worker
-                # 点对点访问
-                layer_logger.debug("get_feature_from_worker")
-
-                # TODO: feature通信方案选择
-                # 异步，线程池
-                # feature_thread_pool.apply_async(
-                #     swapper.get_feature_from_worker, 
-                #     args=(tmp_rank, idx, input_nodes[idx].to(index_type)), 
-                #     callback=lambda x:res.append(x),
-                # )
-
-                # 同步，线程池
-                # item = feature_thread_pool.apply(
-                #     swapper.get_feature_from_worker, 
-                #     args=(tmp_rank, idx, input_nodes[idx].to(index_type)), 
-                # )
-
-                # 同步
-                item = swapper.get_feature_from_worker(tmp_rank, idx, input_nodes[idx].to(index_type))
-                input_nodes_feat[item["idx"],:] = item["feat"]
-                layer_logger.debug(f"input_nodes_feat {item} {item['feat'].shape}")
-
-
-        # TODO: fix
-        # wait for all subprocesses to finish
-        # feature_thread_pool.close()
-        # feature_thread_pool.join()
-        # 处理异步通信结果
-        # for item in res:
-        #     print(f"[{rank}] epoch:{epoch} layer:{i} idx:{item['idx'].shape} feat:{item['feat'].shape}")
-        #     input_nodes_feat[item["idx"],:] = item["feat"]
-        
-        # OPT3: update the step in optimizer
-        optimizer.state['step']["epoch"] = epoch
-        
-        update_flag = get_update_flag(epoch, args)
-            
-        t0 = time.time()
-        model.train()
-
-        # forward
-        if args.model == 'graphsage':
-            logits = model(graph, feat, in_deg, update_flag)
-            # print(type(graph)) # <class 'dgl.heterograph.DGLGraph'>
-            # logits = model(graph, feat)
-        elif args.model == 'gcn':
-            # input_nodes' feat as input
-            # batch label as wanted output
-            logits = model(graph,feat[input_nodes,:],adjs,update_flag)
-            loss = loss_func(
-                results=logits,
-                labels=labels[batch_index.cuda()],
-                lamda=args.lamda,
-                sigma=args.sigma,
-                model=model,
-                fs=args.fs,
-                args=args,
-            )
-        elif args.model == 'gcn_first':
-            for adj in adjs:
-                # [408, 512]
-                # [56, 408]
-                # [16, 56]
-                epoch_logger.debug(f"adj.shape {adj.shape}")
-            # [512, 500]
-            logits = model(input_nodes_feat, adjs)
-            loss = loss_func(
-                results=logits,
-                labels=labels[batch_index.cuda()],
-                lamda=args.lamda,
-                sigma=args.sigma,
-                model=model,
-                fs=args.fs,
-                args=args,
-            )
-        elif args.model == 'gcn_second':
-            pass
-        else:
-            raise NotImplementedError
-
-        # # loss
-        # if args.inductive:
-        #     loss = loss_func(
-        #         results=logits,
-        #         labels=labels,
-        #         lamda=args.lamda,
-        #         sigma=args.sigma,
-        #         model=model,
-        #         fs=args.fs,
-        #         args=args,
-        #     )
-        #     # loss = loss_fcn(logits, labels)
-        # else:
-        #     if args.model == 'gcn':
-        #         loss = loss_func(
-        #             results=logits,
-        #             labels=labels[batch],
-        #             lamda=args.lamda,
-        #             sigma=args.sigma,
-        #             model=model,
-        #             fs=args.fs,
-        #             args=args,
-        #         )
-        #     elif args.model == 'gcn_first':
-        #         loss = None
-        #     elif args.model == 'gcn_second':
-        #         loss = None
-        #     else:
-        #         loss = loss_func(
-        #             results=logits[train_mask],
-        #             labels=labels[train_mask],
-        #             lamda=args.lamda,
-        #             sigma=args.sigma,
-        #             model=model,
-        #             fs=args.fs,
-        #             args=args,
-        #         )
-        #         # loss = loss_fcn(logits[train_mask], labels[train_mask])
-
-        del logits
-
-        optimizer.zero_grad(set_to_none=True)
-        # OPT3: calculate the gradients but aggregate the gradients periodically by reduce_hook and optimizer.state['step']
-        # reduce_hook will aggregate the gradients of the same parameter on different processes
-        torch.cuda.synchronize()
-        start = time.time()
-        loss.backward()
-        torch.cuda.synchronize()
-        end = time.time()
-        backward_time += end - start
-        # 这里实际上是在等待同步完成
-        # 需要更新时才会统计时间
-        if update_flag:
-            pre_reduce = time.time()
-            ctx.reducer.synchronize()
-            reduce_time = time.time() - pre_reduce
-
-        ctx.buffer.next_epoch()
-
-        # gradient aggregation ok
-        # update the parameters
-        optimizer.step()
+            # gradient aggregation ok
+            # update the parameters
+            optimizer.step()
 
         # if epoch >= 5 and epoch % args.log_every != 0 :
         if update_flag:
@@ -1136,8 +1140,8 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail:torch.Tensor, m
             reduce_dur.append(reduce_time)
 
         # if (epoch + 1) % 10 == 0:
-            print("Process {:03d} | Epoch {:05d} | Time(s) {:.4f} | Comm(s) {:.4f} | Reduce(s) {:.4f} | Loss {:.4f}".format(
-                  rank, epoch, np.mean(train_dur), np.mean(comm_dur), np.mean(reduce_dur), loss.item() / part_train))
+            print("Process {:03d} | Epoch {:05d} | Time(s) {:.4f} | Comm(s) {:.4f} | Reduce(s) {:.4f} | Loss {:.4f} | ACC {:.4f}".format(
+                rank, epoch, np.mean(train_dur), np.mean(comm_dur), np.mean(reduce_dur), loss.item() / part_train, calc_acc(logits, labels[batch_index.cuda()])))
 
         ctx.comm_timer.clear()
 
@@ -1233,7 +1237,7 @@ def run(graph, node_dict, gpb, queue, args, all_partition_detail:torch.Tensor, m
         # pretrain为true，fs必为true（因为pretrain就是在训练fs），表示在pretrain阶段训练fs, 只有在这种情况下model中才有fs, 并且需要导出fs的参数
         # pretrain为flase，fs为true，表示在offline阶段，需要加载已经训练好的fs, 然后处理feature, 但model中没有fs层
         # pretrain为false，fs为false，表示使用gcn_first，但model中没有fs层true
-        if args.model == "gcn_first" and args.sampling_method == "layer_importance_sampling" and args.pretrain==True and args.fs==True:
+        if args.model == "gcn_first" andff args.sampling_method == "layer_importance_sampling" and args.pretrain==True and args.fs==True:
             # save weights of fs layer in best_model
             torch.save(
                 {
